@@ -1,0 +1,26 @@
+# Build
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# User data - ORNEK DOSYALAR VE KULLANICI VERILERI
+ornek_pdf/
+ornek_xml/
+ornek pdf/
+ornek xml/
+*.pdf
+donusturulmus*.xml
+e-arsiv-orj.xml
+test_*.xml
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
