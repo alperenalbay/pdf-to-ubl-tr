@@ -2,12 +2,25 @@ from pdf_extractor import PDFExtractor
 from invoice_parser import InvoiceParser
 from xml_generator import UBLTriGenerator
 import re
+import os
+import sys
 
 ext = PDFExtractor()
 parser = InvoiceParser()
 gen = UBLTriGenerator()
 
-data = ext.extract_all(r'C:\Users\Devatek_06\Desktop\2025135663237 TTNET.pdf')
+# Komut satırından PDF yolu al, yoksaornek/ klasöründe ara
+if len(sys.argv) > 1:
+    pdf_path = sys.argv[1]
+else:
+    pdf_path = os.path.join(os.path.dirname(__file__), "ornek", "ornek_ttnet.pdf")
+
+if not os.path.exists(pdf_path):
+    print(f"PDF bulunamadi: {pdf_path}")
+    print("Kullanim: python test_ttnet.py <pdf_dosya_yolu>")
+    sys.exit(1)
+
+data = ext.extract_all(pdf_path)
 lines = data['text'].split('\n')
 
 # Debug SAYIN detection

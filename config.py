@@ -5,8 +5,16 @@ PDF'teki gerçek alan yapısına uygun regex patternleri
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
+
+
+def _sanitize_template_name(name: str) -> str:
+    """Şablon adını güvenli hale getir — path traversal engeli."""
+    safe = re.sub(r"[^a-zA-Z0-9_\-. ]", "_", name)
+    safe = safe.strip(". ")  # Leading/trailing dots ve boşlukları temizle
+    return safe[:100] or "unnamed"
 
 UBL_NAMESPACES = {
     "root": "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
@@ -97,7 +105,7 @@ SUPPLIER_KEYWORDS = [
 ]
 
 CUSTOMER_KEYWORDS = [
-    "ERENOGLU", "ERENOĞLU", "ALICI", "MÜŞTERİ", "MUSTERI",
+    "ALICI", "MÜŞTERİ", "MUSTERI",
 ]
 
 CURRENCY = "TRY"
@@ -122,7 +130,8 @@ def list_templates() -> list:
 
 def load_template(name: str) -> Optional[dict]:
     """Şablon dosyasından yükle."""
-    filepath = TEMPLATES_DIR / f"{name}.json"
+    safe_name = _sanitize_template_name(name)
+    filepath = TEMPLATES_DIR / f"{safe_name}.json"
     if filepath.exists():
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)

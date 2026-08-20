@@ -20,7 +20,15 @@ donusturulmus*.xml
 e-arsiv-orj.xml
 test_*.xml
 
+# Auto-generated templates (PII icekebilir)
+templates/auto_*.json
+
+# Environment & secrets
+.env
+.env.*
+
 # OS
 Thumbs.db
 Desktop.ini
 .DS_Store
+*.log

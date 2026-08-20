@@ -205,9 +205,10 @@ class InvoiceParser:
                 new_invoice.parse_warnings.insert(0,
                     f"Otomatik tespit: {template['name']} (güven: {template['confidence']:.0%})"
                 )
-                # Template'i kaydet
-                template_name = source_file.split("/")[-1].split("\\")[-1].replace(".pdf", "") if source_file else "auto"
-                save_template(template, f"auto_{template_name}")
+                # Template'i kaydet (path traversal engeli)
+                raw_name = source_file.split("/")[-1].split("\\")[-1].replace(".pdf", "") if source_file else "auto"
+                safe_template_name = re.sub(r"[^a-zA-Z0-9_\-. ]", "_", raw_name).strip(". ")[:100].strip() or "auto"
+                save_template(template, f"auto_{safe_template_name}")
                 return new_invoice
             else:
                 invoice.parse_warnings.append(

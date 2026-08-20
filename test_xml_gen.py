@@ -7,8 +7,18 @@ from pdf_extractor import PDFExtractor
 from invoice_parser import InvoiceParser
 from xml_generator import UBLTriGenerator
 
-PDF_PATH = r"C:\Users\Devatek_06\Desktop\2025135663237 TTNET.pdf"
-OUT_XML = r"C:\Users\Devatek_06\Desktop\test_output.xml"
+# Komut satırından PDF yolu al
+if len(sys.argv) > 1:
+    PDF_PATH = sys.argv[1]
+else:
+    PDF_PATH = os.path.join(os.path.dirname(__file__), "ornek", "ornek_ttnet.pdf")
+
+OUT_XML = os.path.join(os.path.dirname(PDF_PATH), "test_output.xml") if os.path.exists(PDF_PATH) else "test_output.xml"
+
+if not os.path.exists(PDF_PATH):
+    print(f"PDF bulunamadi: {PDF_PATH}")
+    print("Kullanim: python test_xml_gen.py <pdf_dosya_yolu>")
+    sys.exit(1)
 
 # 1. PDF çıkar
 ext = PDFExtractor()

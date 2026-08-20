@@ -6,6 +6,9 @@ pdfplumber kullanarak Türkçe karakter destekli metin + yapılandırılmış ta
 import os
 from typing import Optional
 
+# Maksimum PDF boyutu (50 MB)
+MAX_PDF_SIZE = 50 * 1024 * 1024
+
 
 class PDFExtractor:
     """PDF dosyasından ham metin ve tabloları çıkaran sınıf."""
@@ -35,6 +38,9 @@ class PDFExtractor:
             raise FileNotFoundError(f"PDF dosyası bulunamadı: {pdf_path}")
         if not pdf_path.lower().endswith(".pdf"):
             raise ValueError(f"Geçersiz dosya formatı (PDF bekleniyor): {pdf_path}")
+        file_size = os.path.getsize(pdf_path)
+        if file_size > MAX_PDF_SIZE:
+            raise ValueError(f"PDF çok büyük ({file_size / 1024 / 1024:.1f} MB). Maksimum: {MAX_PDF_SIZE / 1024 / 1024:.0f} MB")
 
         full_text = []
         all_tables = []

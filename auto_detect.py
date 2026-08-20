@@ -353,6 +353,7 @@ class HeuristicDetector:
 
 def save_template(template: dict, name: str, templates_dir: str = "templates"):
     """Tespit edilen şablonu dosyaya kaydet."""
+    import re as _re
     templates_path = Path(templates_dir)
     templates_path.mkdir(exist_ok=True)
 
@@ -360,7 +361,8 @@ def save_template(template: dict, name: str, templates_dir: str = "templates"):
     from datetime import datetime
     template["created"] = datetime.now().strftime("%Y-%m-%d")
 
-    filepath = templates_path / f"{name.lower().replace(' ', '_')}.json"
+    safe_name = _re.sub(r"[^a-zA-Z0-9_\-. ]", "_", name).strip(". ")[:100] or "unnamed"
+    filepath = templates_path / f"{safe_name.lower().replace(' ', '_')}.json"
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(template, f, ensure_ascii=False, indent=2)
 
@@ -369,8 +371,10 @@ def save_template(template: dict, name: str, templates_dir: str = "templates"):
 
 def load_template(name: str, templates_dir: str = "templates") -> Optional[dict]:
     """Şablon dosyasından yükle."""
+    import re as _re
     templates_path = Path(templates_dir)
-    filepath = templates_path / f"{name.lower().replace(' ', '_')}.json"
+    safe_name = _re.sub(r"[^a-zA-Z0-9_\-. ]", "_", name).strip(". ")[:100] or "unnamed"
+    filepath = templates_path / f"{safe_name.lower().replace(' ', '_')}.json"
     if filepath.exists():
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
