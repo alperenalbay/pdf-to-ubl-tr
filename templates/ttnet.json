@@ -1,0 +1,43 @@
+{
+  "name": "TTNET e-Arşiv",
+  "version": "1.0",
+  "created": "2026-08-20",
+  "parties_separator": "sayin_uppercase",
+  "supplier": {
+    "name_extraction": "hizmet_no_line",
+    "vkn_pattern": "Vergi\\s*Numaras[ıi]\\s*:\\s*(\\d{10})",
+    "address_format": "postal_code_city_slash",
+    "email_pattern": "E-Posta\\s*:\\s*([^\\s]+@[^\\s]+)",
+    "tax_office_pattern": "Vergi\\s*Dairesi\\s*:\\s*(.+?)\\s*(?:Paket|Hizmet|Erişim|Alo)",
+    "metadata_skip": ["zelle.tirme", "Senaryo", "Fatura\\s+(?:No|Tarihi|Tarih|Tipi)", "Olusturma", "ETTN", "BU\\s+FATURA", "SONRAKI", "SON\\s+.DEME", "Web\\s*Sitesi", "Sicil\\s*No", "Mersis\\s*No", "Alo\\s*Telifesi"]
+  },
+  "customer": {
+    "name_extraction": "sayin_line",
+    "vkn_pattern": "Vergi\\s*No\\s*:\\s*(\\d{10})",
+    "city_format": "district_slash_city",
+    "tax_office_pattern": "Vergi\\s*Dairesi\\s*:\\s*(.+?)\\s*(?:HESAP|ETTN|BİR|B.R)"
+  },
+  "items": {
+    "type": "text_based",
+    "header_pattern": "Tutar\\s+.*?ndirim\\s+Toplam",
+    "item_pattern": "^(.+?)\\s+([\\d.]+,\\d{2})\\s+([\\d.]+,\\d{2})\\s+([\\d.]+,\\d{2})$",
+    "skip_patterns": ["Paket\\s+[UÜ]creti"],
+    "break_patterns": ["TOPLAM|DEVLETE|KDV|Matrah|Mal\\s*Hizmet|Yaln.z|denecek|e-Ar.iv|Yuvarlama"]
+  },
+  "totals": {
+    "gross_patterns": [
+      "TOPLAM\\s*FATURA\\s*TUTARI\\s+([\\d.]+,\\d{2})",
+      "[OÖ]DENECEK\\s*TOPLAM\\s+([\\d.]+,\\d{2})"
+    ],
+    "net_patterns": [
+      "KDV\\s*%\\d+\\s*\\(Matrah\\s+([\\d.]+[\\d.]*)"
+    ],
+    "tax_kdv_patterns": [
+      "DEVLETE\\s*[OÖ]DENEN\\s*VERG[Iİ]LER\\s*TOPLAMI\\s+([\\d.]+,\\d{2})",
+      "KDV\\s*%\\d+.*?([\\d.]+,\\d{2})"
+    ],
+    "tax_otv_patterns": [
+      "[OÖ]TV\\s*%\\d+.*?([\\d.]+,\\d{2})"
+    ]
+  }
+}

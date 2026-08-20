@@ -107,8 +107,15 @@ class InvoiceData:
 
 class InvoiceParser:
 
-    def __init__(self):
-        self.patterns = REGEX_PATTERNS
+    def __init__(self, template: dict = None):
+        """Parser'ı başlat. Opsiyonel template ile farklı formatları destekle."""
+        if template:
+            from config import get_patterns_for_template, get_template_metadata
+            self.patterns = get_patterns_for_template(template)
+            self.template_meta = get_template_metadata(template)
+        else:
+            self.patterns = REGEX_PATTERNS
+            self.template_meta = {}
 
     def parse(self, text: str, source_file: str = "", tables: list = None) -> InvoiceData:
         invoice = InvoiceData(raw_text=text, source_file=source_file)
@@ -117,17 +124,132 @@ class InvoiceParser:
         self._extract_header_fields(invoice, text)
         self._extract_parties(invoice, lines, text)
 
-        if tables:
-            self._extract_from_tables(invoice, tables)
-        else:
-            self._extract_line_items_from_text(invoice, lines)
-            self._extract_totals_from_text(invoice, text)
+        # Her iki yöntemi de dene - hangisi daha iyi sonuç verirse onu kullan
+        text_items = []
+        text_totals = {"gross": 0.0, "net": 0.0, "tax": 0.0}
 
-        invoice.recalculate_totals()
+        # Metin tabanlı çıkarma (her zaman dene)
+        self._extract_line_items_from_text(invoice, lines)
+        if invoice.line_items:
+            text_items = list(invoice.line_items)
+        self._extract_totals_from_text(invoice, text)
+        text_totals = {"gross": invoice.total_gross, "net": invoice.total_net, "tax": invoice.total_tax}
+
+        # Tablo tabanlı çıkarma (varsa dene)
+        if tables:
+            table_items, table_totals = self._extract_from_tables_raw(tables)
+
+            # Tabloda kalem varsa onu kullan
+            if table_items:
+                invoice.line_items = table_items
+
+            # Tabloda toplam varsa ve metin toplamından farklıysa tercih et
+            if table_totals["gross"] > 0:
+                invoice.total_gross = table_totals["gross"]
+            elif text_totals["gross"] > 0:
+                invoice.total_gross = text_totals["gross"]
+
+            if table_totals["net"] > 0:
+                invoice.total_net = table_totals["net"]
+            elif text_totals["net"] > 0:
+                invoice.total_net = text_totals["net"]
+
+            if table_totals["tax"] > 0:
+                invoice.total_tax = table_totals["tax"]
+            elif text_totals["tax"] > 0:
+                invoice.total_tax = text_totals["tax"]
+
+            # Tablo T0'dan müşteri bilgisi tamamla (sadece eksikleri)
+            self._extract_customer_from_table0(invoice, tables)
+
+        # Her kalem için vergi hesapla (calculate_from_net)
+        for item in invoice.line_items:
+            item.calculate_from_net()
+
+        # Toplamları recalculate et: eğer metin/tablodan zaten toplam geldiyse koru, yoksa kalem toplamlarından hesapla
+        if invoice.total_gross <= 0 and invoice.total_net <= 0:
+            invoice.recalculate_totals()
         invoice.generate_uuid()
         invoice.ensure_id()
         self._add_warnings(invoice)
+
+        # ── OTOMATİK TESPİT: Başarısız parse → heuristic analiz ──
+        if not invoice.line_items or invoice.total_gross <= 0:
+            invoice = self._try_auto_detect(text, source_file, tables, invoice)
+
         return invoice
+
+    def _try_auto_detect(self, text, source_file, tables, invoice):
+        """Parse başarısızsa, otomatik tespit ile yeni template dene."""
+        try:
+            from auto_detect import HeuristicDetector, save_template
+            from config import get_patterns_for_template, get_template_metadata
+
+            detector = HeuristicDetector()
+            template = detector.analyze(text)
+
+            if template["confidence"] < 0.4:
+                # Yeterince güvenilir tespit yapılamadı
+                invoice.parse_warnings.append(
+                    f"Format tanınamadı (güven: {template['confidence']:.0%}). "
+                    "Manuel şablon ekleyebilirsiniz."
+                )
+                return invoice
+
+            # Yeni template ile tekrar parse et
+            new_parser = InvoiceParser(template=template)
+            new_invoice = new_parser.parse(text, source_file, tables)
+
+            # Yeni sonuç daha mı iyi?
+            if self._is_better_result(new_invoice, invoice):
+                new_invoice.parse_warnings.insert(0,
+                    f"Otomatik tespit: {template['name']} (güven: {template['confidence']:.0%})"
+                )
+                # Template'i kaydet
+                template_name = source_file.split("/")[-1].split("\\")[-1].replace(".pdf", "") if source_file else "auto"
+                save_template(template, f"auto_{template_name}")
+                return new_invoice
+            else:
+                invoice.parse_warnings.append(
+                    f"Otomatik tespit başarısız (güven: {template['confidence']:.0%}). "
+                    "Varsayılan şablon kullanıldı."
+                )
+                return invoice
+
+        except Exception as e:
+            invoice.parse_warnings.append(f"Otomatik tespit hatası: {str(e)}")
+            return invoice
+
+    def _is_better_result(self, new_inv, old_inv) -> bool:
+        """Yeni parse sonucu eskisinden daha mı iyi?"""
+        new_score = 0
+        old_score = 0
+
+        # Kalem varlığı
+        if new_inv.line_items:
+            new_score += 3
+        if old_inv.line_items:
+            old_score += 3
+
+        # Toplam tutar varlığı
+        if new_inv.total_gross > 0:
+            new_score += 2
+        if old_inv.total_gross > 0:
+            old_score += 2
+
+        # Satıcı adı
+        if new_inv.supplier_name and "bilinmiyor" not in new_inv.supplier_name.lower():
+            new_score += 1
+        if old_inv.supplier_name and "bilinmiyor" not in old_inv.supplier_name.lower():
+            old_score += 1
+
+        # Müşteri adı
+        if new_inv.customer_name:
+            new_score += 1
+        if old_inv.customer_name:
+            old_score += 1
+
+        return new_score > old_score
 
     # ─── HEADER FIELDS ──────────────────────────────────────────
 
@@ -147,6 +269,10 @@ class InvoiceParser:
         if time_str:
             clean = re.sub(r"[^\d:]", "", time_str)
             if ":" in clean:
+                # HH:MM formatını HH:MM:SS'e çevir
+                parts = clean.split(":")
+                if len(parts) == 2:
+                    clean = f"{parts[0]}:{parts[1]}:00"
                 invoice.issue_time = clean
 
         inv_type = self._search_first(text, "invoice_type")
@@ -170,16 +296,24 @@ class InvoiceParser:
     def _extract_parties(self, invoice: InvoiceData, lines: list, text: str):
         """PDF'in üst bloğu satıcı, 'Sayın,' bloğu alıcı olacak şekilde tespit eder.
 
-        PDF yapısı:
+        PDF yapısı (Media Markt):
             [0] e-Arşiv Fatura              ← belge başlığı
             [1-8] satıcı bilgileri (ad, adres, VD, TCKN)
             [9] Sayın, ...                  ← müşteri başlangıcı
             [10-17] müşteri bilgileri + metadata (Fatura No, Tarih vb.)
             [18+] kalemler, toplamlar
+
+        PDF yapısı (TTNET):
+            [0-6] metadata + satıcı header
+            [7-17] satıcı bilgileri
+            [18] SAYIN MÜŞTERİ ADI ...      ← müşteri başlangıcı (virgülsüz)
+            [19-25] müşteri bilgileri + ETTN
+            [26+] kalemler, toplamlar
         """
         sayin_idx = -1
         for i, line in enumerate(lines):
-            if re.search(r"Say.+n\s*,", line.strip(), re.IGNORECASE):
+            # "Sayın," (virgüllü) veya "SAYIN" (virgülsüz, TTNET) formatını eşleştir
+            if re.search(r"Say.+n[\s,]", line.strip(), re.IGNORECASE):
                 sayin_idx = i
                 break
 
@@ -208,6 +342,9 @@ class InvoiceParser:
         supplier_email = ""
         supplier_postal_code = ""
         supplier_city = ""
+        supplier_district = ""
+        supplier_street = ""
+        supplier_building_no = ""
         address_parts = []
 
         for s in supplier_lines:
@@ -226,26 +363,62 @@ class InvoiceParser:
                 supplier_vkn = vkn_m.group(1)
                 continue
 
-            # Vergi Dairesi
-            vd_m = re.search(r"Vergi\s*Dairesi\s*:\s*(.+)", s)
-            if vd_m:
-                supplier_tax_office = vd_m.group(1).strip()
+            # VKN - Vergi Numarası (TTNET formatı: "Vergi Numarası: 8590491872")
+            vkn_num_m = re.search(r"Vergi\s*Numaras[ıi]\s*:\s*(\d{10})", s)
+            if vkn_num_m:
+                supplier_vkn = vkn_num_m.group(1)
                 continue
 
-            # E-Posta
-            ep_m = re.search(r"E-Posta\s*:\s*(.+)", s)
+            # HİZMET NO içeren satırı atla (TTNET: "TTNET ANONIM SIRKETI HİZMET NO : 8846748153")
+            # Ama önce satıcı adını bu satırdan çıkar
+            hizmet_m = re.search(r"H.{0,3}ZMET\s*NO\s*:", s, re.IGNORECASE)
+            if hizmet_m:
+                name_part = re.split(r"\s+H.{0,3}ZMET\s*NO", s, flags=re.IGNORECASE)[0].strip()
+                if name_part and not supplier_name and len(name_part) > 2:
+                    supplier_name = name_part
+                continue
+
+            # Vergi Dairesi - hem "Vergi Dairesi:" hem "Müşteri Vergi Dairesi:" (TTNET)
+            vd_m = re.search(r"(?:Müşteri\s+)?Vergi\s*Dairesi\s*:\s*(.+)", s)
+            if vd_m:
+                vd_text = vd_m.group(1).strip()
+                vd_text = re.split(r"\s*(?:Paket|Hizmet|Erişim|Aylık|Alo|Web|Sicil|Mersis)\s", vd_text, flags=re.IGNORECASE)[0].strip()
+                if vd_text:
+                    supplier_tax_office = vd_text
+                continue
+
+            # E-Posta (sadece e-posta adresini al, sonrasını kes)
+            ep_m = re.search(r"E-Posta\s*:\s*([^\s]+@[^\s]+)", s)
             if ep_m:
                 supplier_email = ep_m.group(1).strip()
                 continue
 
-            # Posta kodu + şehir (örn: "06830 GÖLBAŞI ANKARA")
-            pc_m = re.match(r"^(\d{5})\s+(.+)$", s)
-            if pc_m:
+            # Posta kodu + şehir (TTNET: "34349 Beşiktaş / İSTANBUL FATURA NO : ...")
+            pc_m = re.match(r"^(\d{5})\s+(.+?)\s+(?:FATURA|Fatura|Tel:|Vergi|E-Posta|ALO|Web|Sicil)", s)
+            if not pc_m:
+                pc_m = re.match(r"^(\d{5})\s+(\S+(?:\s+\S+)?)\s*$", s)
+            if pc_m and not supplier_city:
                 supplier_postal_code = pc_m.group(1)
                 city_str = pc_m.group(2).strip()
-                city_parts_list = city_str.split()
-                if city_parts_list:
-                    supplier_city = " ".join(city_parts_list[-2:]) if len(city_parts_list) >= 2 else city_parts_list[0]
+                if "/" in city_str:
+                    # "Beşiktaş / İSTANBUL" → ilçe / şehir
+                    parts = [p.strip() for p in city_str.split("/")]
+                    if len(parts) == 2:
+                        supplier_city = parts[1]
+                        supplier_district = parts[0]
+                    else:
+                        supplier_city = city_str
+                else:
+                    city_parts_list = city_str.split()
+                    if len(city_parts_list) >= 2:
+                        supplier_city = " ".join(city_parts_list[-2:])
+                address_parts.append(s)
+                continue
+
+            # Şehir/İlçe formatı (TTNET: "ÇANKAYA / ANKARA")
+            city_slash_m = re.match(r"^(\S+)\s*/\s*(\S+)\s*$", s)
+            if city_slash_m and not supplier_city:
+                supplier_city = f"{city_slash_m.group(1)} {city_slash_m.group(2)}"
                 address_parts.append(s)
                 continue
 
@@ -253,8 +426,42 @@ class InvoiceParser:
             if s.strip() == "No:":
                 continue
 
+            # Mersis No atla (adres kontrolünden önce)
+            if re.search(r"Mersis\s*No", s, re.IGNORECASE):
+                continue
+
+            # Sicil No atla (adres kontrolünden önce - "No:" içeriyor)
+            if re.search(r"Sicil\s*No", s, re.IGNORECASE):
+                continue
+
+            # Alo Tarifesi atla (adres kontrolünden önce - "No:" içerebilir)
+            if re.search(r"Alo\s*Telifesi", s, re.IGNORECASE):
+                continue
+
+            # Metadata satırlarını atla (adres kontrolünden önce - bozuk karakterlere dayanıklı)
+            if re.search(r"(?:zelle.tirme|Senaryo|Fatura\s+(?:No|Tarihi|Tarih|Tipi)|Olusturma|ETTN|BU\s+FATURA|SONRAKI|SON\s+.DEME)", s, re.IGNORECASE):
+                continue
+
             # Adres içeren satırlar
-            if re.search(r"(?:No[:\s]|Mah\.|Cad\.|Bulvar|Sokak|Sok\.|Apartman|Kat|Daire|Blo)", s, re.IGNORECASE):
+            if re.search(r"(?:No[:\s]|Mah\.|Mahallesi|Cad\.|Bulvar|Sokak|Sok\.|Apartman|Kat|Daire|Blo)", s, re.IGNORECASE):
+                # TTNET: "Gayrettepe Mahallesi Vefa Bayırı Sokak ALO TEL NO : 31223810"
+                # Ekstra metinleri temizle
+                clean_addr = re.split(r"\s+ALO\s+TEL\s+NO", s, flags=re.IGNORECASE)[0].strip()
+                clean_addr = re.split(r"\s+HIZMET\s+TUR", clean_addr, flags=re.IGNORECASE)[0].strip()
+                # "No: 2 Kat: 3" patterninden binanı çıkar
+                bno_m = re.search(r"No\s*:\s*(\d+)", clean_addr)
+                if bno_m:
+                    supplier_building_no = bno_m.group(1)
+                # Cadde/sokak: "Mah." içeren kısım
+                mah_m = re.match(r"^(.+?\s+Mah(?:allesi)?)\s+(.+?)(?:\s+No\s*:|\s*$)", clean_addr)
+                if mah_m:
+                    if not supplier_district:
+                        supplier_district = mah_m.group(1).replace("Mahallesi", "").replace("Mah.", "").strip()
+                    if not supplier_street:
+                        supplier_street = clean_addr
+                else:
+                    if not supplier_street:
+                        supplier_street = clean_addr
                 address_parts.append(s)
                 continue
 
@@ -272,6 +479,14 @@ class InvoiceParser:
 
             # Sayıcı satırlar (EArşiv vs) atla
             if re.search(r"e-Ar.siv\s+Fatura|e-Fatura", s, re.IGNORECASE):
+                continue
+
+            # Tarih/saat satırlarını atla (ör: "19.01.2026 13:35 EFATURA")
+            if re.match(r"^\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}", s):
+                continue
+
+            # Web/Sicil/Telefon/Faks satırlarını atla
+            if re.search(r"(?:Web\s*Sitesi|Sicil\s*No|Tel:|Faks:|ALO\s*TEL|HİZMET\s*TÜR|Erişim\s*(?:Hızı|Şekli)|Alo\s*Telifesi)", s, re.IGNORECASE):
                 continue
 
             # Hala isim tespit edilmediyse ve yeterince uzunsa → muhtemelen satıcı adı
@@ -306,10 +521,24 @@ class InvoiceParser:
         invoice.supplier_email = supplier_email
         invoice.supplier_postal_code = supplier_postal_code
         invoice.supplier_city = supplier_city
+        invoice.supplier_district = supplier_district
+        invoice.supplier_street = supplier_street
+        invoice.supplier_building_no = supplier_building_no
 
         # ─── MÜŞTERİ BLOĞU: Sayın, ile metadata arası ─────────
         if sayin_idx < 0:
             return
+
+        # SAYIN satırından müşteri adını çıkar (TTNET: "SAYIN MÜŞTERİ ADI SON ÖDEME...")
+        sayin_line = lines[sayin_idx].strip()
+        customer_name_from_sayin = ""
+        # "Say" + word chars (SAYIN) + space + lazy capture until SON/Tarih/Fatura/ETTN/Vergi/end
+        sayin_name_match = re.search(
+            r"Say\w*\s+(.+?)(?:\s+SON\b|\s+Tarih\b|\s+Fatura\b|\s+ETTN\b|\s+Vergi\b|$)",
+            sayin_line, re.IGNORECASE
+        )
+        if sayin_name_match:
+            customer_name_from_sayin = sayin_name_match.group(1).strip()
 
         customer_lines = []
         for i in range(sayin_idx + 1, len(lines)):
@@ -317,7 +546,7 @@ class InvoiceParser:
             if not s:
                 continue
             # Satır içinde metadata keyword'ü varsa, ondan önceki kısmı müşteri olarak al
-            meta_split = re.split(r"(\s*.zelle.tirme\s+No\s*:|\s*Senaryo\s*:|\s*Fatura\s+No\s*:|\s*Fatura\s+Tarihi|\s*Fatura\s+Tipi|\s*Olu.turma\s+Zaman)", s, flags=re.IGNORECASE)
+            meta_split = re.split(r"(\s*.zelle.tirme\s+No\s*:|\s*Senaryo\s*:|\s*Fatura\s+No\s*:|\s*Fatura\s+Tarihi|\s*Fatura\s+Tipi|\s*Olu.turma\s+Zaman|\s*ETTN\s*:|\s*B.R\s+SONRAK.|\s*SON\s+.DEME)", s, flags=re.IGNORECASE)
             if len(meta_split) > 1:
                 pre = meta_split[0].strip()
                 if pre:
@@ -333,6 +562,7 @@ class InvoiceParser:
         customer_tax_office = ""
         customer_postal_code = ""
         customer_city = ""
+        customer_district = ""
         cust_address_parts = []
 
         for c in customer_lines:
@@ -345,16 +575,36 @@ class InvoiceParser:
                 customer_vkn = vkn_m.group(1)
                 continue
 
+            # VKN - Vergi No (TTNET formatı: "Vergi No: 0851205664")
+            vkn_no_m = re.search(r"Vergi\s*No\s*:\s*(\d{10})", c)
+            if vkn_no_m:
+                customer_vkn = vkn_no_m.group(1)
+                continue
+
             # TCKN
             tckn_m = re.search(r"TCKN\s*:\s*(\d{10,11})", c)
             if tckn_m:
                 customer_tckn = tckn_m.group(1)
                 continue
 
-            # Vergi Dairesi
-            vd_m = re.search(r"Vergi\s*Dairesi\s*:\s*(.+)", c)
+            # TCKN/VKN (TTNET: "TCKN/VKN: 7415158717" gibi)
+            tckn_vkn_m = re.search(r"TCKN/VKN\s*:\s*(\d{10,11})", c)
+            if tckn_vkn_m:
+                val = tckn_vkn_m.group(1)
+                if len(val) == 10:
+                    customer_vkn = val
+                else:
+                    customer_tckn = val
+                continue
+
+            # Vergi Dairesi - hem "Vergi Dairesi:" hem "Müşteri Vergi Dairesi:" (TTNET)
+            vd_m = re.search(r"(?:Müşteri\s+)?Vergi\s*Dairesi\s*:\s*(.+)", c)
             if vd_m:
-                customer_tax_office = vd_m.group(1).strip()
+                vd_text = vd_m.group(1).strip()
+                # TTNET: extra text temizle ("HESAP NUMARASI : 7038329592" gibi)
+                vd_text = re.split(r"\s*HESAP\s*NUMARASI", vd_text, flags=re.IGNORECASE)[0].strip()
+                if vd_text:
+                    customer_tax_office = vd_text
                 continue
 
             # Posta kodu + şehir
@@ -365,6 +615,15 @@ class InvoiceParser:
                 city_parts_list = city_str.split()
                 if len(city_parts_list) >= 2:
                     customer_city = " ".join(city_parts_list[-2:])
+                cust_address_parts.append(c)
+                continue
+
+            # Şehir/İlçe formatı (TTNET: "ÇANKAYA / ANKARA")
+            city_slash_m = re.match(r"^(\S+)\s*/\s*(\S+)$", c)
+            if city_slash_m:
+                # İlçe / Şehir formatı: ÇANKAYA ilçe, ANKARA şehir
+                customer_district = city_slash_m.group(1)
+                customer_city = city_slash_m.group(2)
                 cust_address_parts.append(c)
                 continue
 
@@ -392,28 +651,31 @@ class InvoiceParser:
                 continue
 
             # Hala isim tespit edilmediyse → müşteri adı
+            # Ama metadata veya toplam satırlarını isim olarak alma
             if not customer_name and len(c) > 2:
-                customer_name = c
+                if not re.search(r"(?:TUTAR|Toplam|ÖDEME|ETTN|SONRAKİ|Senaryo|Fatura)", c, re.IGNORECASE):
+                    customer_name = c
 
         customer_address = ", ".join(cust_address_parts) if cust_address_parts else ""
 
-        invoice.customer_name = customer_name
+        # Müşteri adı: her zaman SAYIN satırından gelen ismi tercih et
+        if customer_name_from_sayin:
+            invoice.customer_name = customer_name_from_sayin
+        elif customer_name:
+            invoice.customer_name = customer_name
+        else:
+            invoice.customer_name = ""
         invoice.customer_tckn = customer_tckn
         invoice.customer_vkn = customer_vkn
         invoice.customer_tax_office = customer_tax_office
         invoice.customer_address = customer_address
         invoice.customer_city = customer_city
+        invoice.customer_district = customer_district
 
     # ─── TABLE-BASED EXTRACTION ─────────────────────────────────
 
-    def _extract_from_tables(self, invoice: InvoiceData, tables: list):
-        """pdfplumber tablolarından kalem ve toplam bilgilerini çıkarır.
-
-        Tablo yapısı:
-          T0: Müşteri + Metadata (sol-sağ)
-          T1: Kalem satırları [sira_no, kod, ad, miktar, birim_fiyat, kdv%, kdv_tutari, diger, tutar]
-          T2: Toplam satırları
-        """
+    def _extract_from_tables_raw(self, tables: list):
+        """Tablolardan kalem ve toplamları çıkarır, doğrudan list/dict döner."""
         items = []
         totals = {"gross": 0.0, "net": 0.0, "tax": 0.0}
 
@@ -424,14 +686,12 @@ class InvoiceParser:
 
                 first_cell = (row[0] or "").strip()
 
-                # Kalem satırı: ilk hücre sayısal (sira no)
                 if first_cell.isdigit():
                     item = self._parse_table_line_item(row, int(first_cell))
                     if item:
                         items.append(item)
                     continue
 
-                # Toplam satırları: label-value çiftleri
                 label = " ".join(str(c or "") for c in row).strip()
                 value = self._find_amount_in_row(row)
 
@@ -447,9 +707,14 @@ class InvoiceParser:
                 elif "Mal Hizmet Toplam" in label:
                     totals["net"] = value
 
+        return items, totals
+
+    def _extract_from_tables(self, invoice: InvoiceData, tables: list):
+        """pdfplumber tablolarından kalem ve toplam bilgilerini çıkarır."""
+        items, totals = self._extract_from_tables_raw(tables)
+
         if items:
             invoice.line_items = items
-
         if totals["gross"] > 0:
             invoice.total_gross = totals["gross"]
         if totals["net"] > 0:
@@ -457,19 +722,17 @@ class InvoiceParser:
         if totals["tax"] > 0:
             invoice.total_tax = totals["tax"]
 
-        # Table T0'dan müşteri bilgisi çek (VKN/TCKN, VD, adres eksikliklerini tamamla)
-        if tables:
-            self._extract_customer_from_table0(invoice, tables)
-
     def _extract_customer_from_table0(self, invoice: InvoiceData, tables: list):
-        """Table T0'nun sol hücresinden müşteri bilgilerini çıkarır."""
+        """Table T0'nun sol hücresinden eksik müşteri bilgilerini tamamlar.
+        
+        Mevcut müşteri adını veya VKN'sini override ETMEZ - sadece boş olanları doldurur.
+        """
         if not tables or len(tables) < 1:
             return
         t0 = tables[0]
         if len(t0) < 2:
             return
 
-        # Sol hücre: müşteri bilgisi (Sayın,\nAdres\n...\nVKN: xxxxx)
         left_cell = t0[1][0] if len(t0[1]) > 0 else ""
         if not left_cell:
             return
@@ -527,17 +790,18 @@ class InvoiceParser:
             if not customer_name:
                 customer_name = cl
 
-        if customer_name:
+        # Sadece BOŞ olan alanları doldur - mevcut bilgileri KORU
+        if customer_name and not invoice.customer_name:
             invoice.customer_name = customer_name
-        if customer_vkn:
+        if customer_vkn and not invoice.customer_vkn:
             invoice.customer_vkn = customer_vkn
-        if customer_tax_office:
+        if customer_tax_office and not invoice.customer_tax_office:
             invoice.customer_tax_office = customer_tax_office
-        if customer_address_parts:
+        if customer_address_parts and not invoice.customer_address:
             invoice.customer_address = ", ".join(customer_address_parts)
-        if customer_city:
+        if customer_city and not invoice.customer_city:
             invoice.customer_city = customer_city
-        if customer_postal_code:
+        if customer_postal_code and not invoice.customer_postal_code:
             invoice.customer_postal_code = customer_postal_code
 
     def _parse_table_line_item(self, row: list, line_id: int) -> Optional[InvoiceLineItem]:
@@ -619,7 +883,12 @@ class InvoiceParser:
     # ─── TEXT-BASED LINE ITEM EXTRACTION (fallback) ────────────
 
     def _extract_line_items_from_text(self, invoice: InvoiceData, lines: list):
-        """Tablo yoksa metin tabanlı kalem çıkarma (fallback)."""
+        """Tablo yoksa metin tabanlı kalem çıkarma (fallback).
+
+        Desteklenen formatlar:
+        1. Media Markt: "1 AB-123 Ürün Adı 3 Adet 100,00 TL"
+        2. TTNET: "İnternet 1.009,99 0,00 1.009,99" (hizmet adı + 3 tutar)
+        """
         items = []
         in_items_section = False
 
@@ -628,20 +897,71 @@ class InvoiceParser:
             if not stripped:
                 continue
 
+            # Media Markt formatı: "Sıra No Hizmet" başlığı
             if re.search(r"S.+\s+r.n\s*Hizmet", stripped, re.IGNORECASE):
+                in_items_section = True
+                continue
+
+            # TTNET formatı: "Tutar İndirim Toplam" başlığı
+            if re.search(r"Tutar\s+İndirim\s+Toplam", stripped, re.IGNORECASE):
                 in_items_section = True
                 continue
 
             if not in_items_section:
                 continue
 
-            if re.search(r"(?:Mal\s*Hizmet|Toplam|KDV|Matrah|Yaln.z|denecek|e-Ar.iv)", stripped, re.IGNORECASE):
+            # Toplam satırlarında dur
+            if re.search(r"(?:Mal\s*Hizmet|Toplam|KDV|Matrah|Yaln.z|denecek|e-Ar.iv|TOPLAM|DEVLETE|Yuvarlama|Önceki|Gelecek)", stripped, re.IGNORECASE):
                 break
 
+            # Media Markt formatı: "1 AB-123 Ürün Adı ..."
             if re.match(r"^\d+\s+[A-Z]{2,}-\d+", stripped):
                 item = self._parse_text_line_item(stripped, lines, i, len(items))
                 if item:
                     items.append(item)
+                continue
+
+            # TTNET formatı: "İnternet 1.009,99 0,00 1.009,99" (hizmet adı + 3 tutar)
+            ttnet_match = re.match(
+                r"^(.+?)\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})$",
+                stripped
+            )
+            if ttnet_match:
+                name = ttnet_match.group(1).strip()
+                # Toplam satırı ise atla (Paket Ücreti = İnternet + Telefon toplamı)
+                if re.search(r"(?:Toplam|Ara\s*Toplam|Genel|Fatura\s*Toplam|Paket\s+[UÜ]creti)", name, re.IGNORECASE):
+                    continue
+                # Tutar, İndirim, Toplam
+                amount = self._parse_turkish_number(ttnet_match.group(2))
+                discount = self._parse_turkish_number(ttnet_match.group(3))
+                total = self._parse_turkish_number(ttnet_match.group(4))
+
+                item = InvoiceLineItem(
+                    line_id=len(items) + 1,
+                    name=name,
+                    quantity=1.0,
+                    unit_price_net=total,
+                    line_total_net=total,
+                    tax_rate=20.0,
+                )
+                items.append(item)
+                continue
+
+            # TTNET: "Katma Değerli Servis Ücretler Toplamı 175,00" (tek tutar)
+            kds_match = re.match(r"^(Katma Değerli.+?)\s+([\d.]+,\d{2})$", stripped)
+            if kds_match:
+                name = kds_match.group(1).strip()
+                total = self._parse_turkish_number(kds_match.group(2))
+                item = InvoiceLineItem(
+                    line_id=len(items) + 1,
+                    name=name,
+                    quantity=1.0,
+                    unit_price_net=total,
+                    line_total_net=total,
+                    tax_rate=20.0,
+                )
+                items.append(item)
+                continue
 
         invoice.line_items = items
 
@@ -699,7 +1019,12 @@ class InvoiceParser:
     # ─── TEXT-BASED TOTALS EXTRACTION (fallback) ───────────────
 
     def _extract_totals_from_text(self, invoice: InvoiceData, text: str):
-        """Tablo yoksa metin tabanlı toplam çıkarma."""
+        """Tablo yoksa metin tabanlı toplam çıkarma.
+
+        Desteklenen formatlar:
+        - Media Markt: "Vergiler Dahil Toplam Tutar 50.466,00"
+        - TTNET: "TOPLAM FATURA TUTARI 1.315,00"
+        """
         gross = self._search_first(text, "total_gross")
         if gross:
             invoice.total_gross = self._parse_turkish_number(gross)
@@ -711,6 +1036,17 @@ class InvoiceParser:
         kdv = self._search_first(text, "total_tax_kdv")
         if kdv:
             invoice.total_tax = self._parse_turkish_number(kdv)
+
+        # ÖTV varsa KDV'ye ekle (TTNET: KDV + ÖTV = toplam vergi)
+        otv = self._search_first(text, "total_tax_otv")
+        if otv:
+            invoice.total_tax += self._parse_turkish_number(otv)
+
+        # Matrah (net) placeholder pattern - TTNET: "KDV %20 (Matrah 1.011.54 )"
+        if invoice.total_net == 0:
+            matrah_m = re.search(r"Matrah\s+([\d.]+[\d.]*)", text, re.IGNORECASE)
+            if matrah_m:
+                invoice.total_net = self._parse_turkish_number(matrah_m.group(1))
 
     # ─── UTILITY ────────────────────────────────────────────────
 
@@ -741,7 +1077,10 @@ class InvoiceParser:
             cleaned = cleaned.replace(",", ".")
         elif "." in cleaned:
             parts = cleaned.split(".")
-            if len(parts[-1]) == 3 and all(p.isdigit() for p in parts):
+            if len(parts) >= 3:
+                # Birden fazla nokta → binlik ayraçları kaldır, sondaki ondalık olarak koru
+                cleaned = "".join(parts[:-1]) + "." + parts[-1]
+            elif len(parts[-1]) == 3 and all(p.isdigit() for p in parts):
                 cleaned = cleaned.replace(".", "")
         try:
             return float(cleaned)

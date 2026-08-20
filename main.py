@@ -14,12 +14,13 @@ from datetime import datetime
 from pdf_extractor import PDFExtractor
 from invoice_parser import InvoiceParser, InvoiceData
 from xml_generator import UBLTriGenerator
+from config import list_templates, load_template, TEMPLATES_DIR
 
 
 class App(tk.Tk):
 
     APP_TITLE = "PDF > UBL-TR E-Arsiv Fatura Donusturucu"
-    APP_VERSION = "2.0.0"
+    APP_VERSION = "2.1.0"
     WINDOW_SIZE = "960x700"
 
     def __init__(self):
@@ -35,9 +36,11 @@ class App(tk.Tk):
 
         self.selected_files = []
         self.output_dir = ""
+        self.selected_template = None  # Seçilen şablon (None = otomatik)
 
         self._setup_styles()
         self._build_ui()
+        self._refresh_template_list()
 
     def _setup_styles(self):
         style = ttk.Style()
@@ -79,7 +82,16 @@ class App(tk.Tk):
         sep.pack(side=tk.LEFT, fill=tk.Y, padx=6)
 
         ttk.Button(btn_frame, text="Klasoru Ac", command=self._open_output_dir).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(btn_frame, text="Temizle", command=self._clear_all).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Temizle", command=self._clear_all).pack(side=tk.LEFT, padx=(0, 16))
+
+        # Şablon seçici
+        ttk.Label(btn_frame, text="Sablon:", style="Sub.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        self.template_var = tk.StringVar(value="Otomatik")
+        self.template_combo = ttk.Combobox(btn_frame, textvariable=self.template_var, width=20, state="readonly")
+        self.template_combo.pack(side=tk.LEFT, padx=(0, 4))
+        self.template_combo.bind("<<ComboboxSelected>>", self._on_template_change)
+
+        ttk.Button(btn_frame, text="Sablonu Sil", command=self._delete_template).pack(side=tk.LEFT, padx=(0, 8))
 
         self.file_count_label = ttk.Label(btn_frame, text="Secili dosya: 0", style="Sub.TLabel")
         self.file_count_label.pack(side=tk.RIGHT)
@@ -227,7 +239,8 @@ class App(tk.Tk):
                 pdf_data = self.pdf_extractor.extract_all(pdf_path)
                 text = pdf_data["text"]
                 tables = pdf_data["tables"]
-                invoice = self.invoice_parser.parse(text, source_file=pdf_path, tables=tables)
+                parser = self._get_parser()
+                invoice = parser.parse(text, source_file=pdf_path, tables=tables)
 
                 if invoice.parse_warnings:
                     for w in invoice.parse_warnings:
@@ -290,6 +303,9 @@ class App(tk.Tk):
             "success" if error_count == 0 else "error",
         )
 
+        # Otomatik tespit edilen yeni şablonları listele
+        self.after(100, self._refresh_template_list)
+
         output_path_display = self.output_dir or "PDF ile ayni klasor"
         if success_count > 0:
             self.after(0, lambda: messagebox.showinfo(
@@ -318,6 +334,54 @@ class App(tk.Tk):
         def _update():
             self.status_label.configure(text=text, style=style)
         self.after(0, _update)
+
+    # ─── ŞABLON YÖNETİMİ ────────────────────────────────────────
+
+    def _refresh_template_list(self):
+        """Şablon listesini yenile."""
+        templates = list_templates()
+        options = ["Otomatik"] + templates
+        self.template_combo["values"] = options
+        if self.template_var.get() not in options:
+            self.template_var.set("Otomatik")
+
+    def _on_template_change(self, event=None):
+        """Şablon seçimi değiştiğinde."""
+        sel = self.template_var.get()
+        if sel == "Otomatik":
+            self.selected_template = None
+            self._log("Sablon: Otomatik tespit modu", "info")
+        else:
+            self.selected_template = load_template(sel)
+            if self.selected_template:
+                self._log(f"Sablon yuklendi: {sel}", "info")
+            else:
+                self._log(f"Sablon yuklenemedi: {sel}", "error")
+
+    def _delete_template(self):
+        """Seçilen şablonu sil."""
+        sel = self.template_var.get()
+        if sel == "Otomatik":
+            messagebox.showinfo("Bilgi", "Otomatik sablon silinemez.")
+            return
+        if not messagebox.askyesno("Onay", f"'{sel}' sablonunu silmek istediginize emin misiniz?"):
+            return
+        try:
+            template_path = TEMPLATES_DIR / f"{sel}.json"
+            if template_path.exists():
+                template_path.unlink()
+                self._log(f"Sablon silindi: {sel}", "info")
+                self.template_var.set("Otomatik")
+                self.selected_template = None
+                self._refresh_template_list()
+        except Exception as e:
+            self._log(f"Sablon silinemedi: {e}", "error")
+
+    def _get_parser(self) -> InvoiceParser:
+        """Seçilen şablon ile InvoiceParser oluştur."""
+        if self.selected_template:
+            return InvoiceParser(template=self.selected_template)
+        return InvoiceParser()
 
 
 def main():
