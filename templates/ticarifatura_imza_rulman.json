@@ -1,0 +1,31 @@
+{
+  "name": "İMZA RULMAN",
+  "version": "1.0",
+  "created": "2026-09-06",
+  "parties_separator": "unknown",
+  "supplier": {
+    "name_extraction": "auto"
+  },
+  "customer": {
+    "name_extraction": "auto",
+    "city_format": "district_slash_city",
+    "start_regex": "İnternet\\s*Sitesi"
+  },
+  "items": {
+    "type": "table_based",
+    "column_map": ["no", "code", "name", "qty", "price", "disc", "vat_rate", "total"]
+  },
+  "totals": {
+    "gross_patterns": [
+      "Vergiler\\s*Dahil\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "Genel\\s*Toplam\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "[OÖ]denecek\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "net_patterns": [
+      "Mal\\s*Hizmet\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "tax_kdv_patterns": [
+      "Hesaplanan\\s*(?:Katma\\s*De[ğg]er\\s*Vergis[ıi]|KDV).*?([\\d.]+,\\d{2})"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "VODAFONE",
+  "version": "1.0",
+  "created": "2026-09-06",
+  "parties_separator": "unknown",
+  "supplier": {
+    "name_extraction": "auto"
+  },
+  "customer": {
+    "name_extraction": "auto",
+    "city_format": "postal_code_city",
+    "start_regex": "SON\\s*[OÖ]DEME\\s*TAR[İI]H[İI]"
+  },
+  "items": {
+    "type": "none"
+  },
+  "totals": {
+    "gross_patterns": [
+      "FATURA\\s*TUTARI\\(TL\\)\\s*[: ]?\\s*([\\d.]+(?:,\\d+)?)",
+      "[OÖ]denecek\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+(?:,\\d+)?)\\s*(?:TL|TRY)"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "Türk Telekom (FATURA ID)",
+  "version": "1.0",
+  "created": "2026-09-06",
+  "parties_separator": "unknown",
+  "supplier": {
+    "name_extraction": "auto"
+  },
+  "customer": {
+    "name_extraction": "auto",
+    "city_format": "postal_code_city"
+  },
+  "items": {
+    "type": "text_based",
+    "item_pattern": "^(?P<name>[A-Za-zÇĞİÖŞÜçğıöşü][^0-9]*?)\\s+(?P<total>-?[\\d.]+\\.\\d{2})$",
+    "skip_patterns": ["VERGİ", "KDV", "TUTARI", "TOPLAM", "FATURA", "Dahil"]
+  },
+  "totals": {
+    "gross_patterns": [
+      "FATURA\\s*TUTARI(?:\\(TL\\))?\\s*[: ]?\\s*([\\d.]+(?:,\\d+)?)\\s*(?:TL|TRY)",
+      "[OÖ]denecek\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+(?:,\\d+)?)\\s*(?:TL|TRY)"
+    ],
+    "net_patterns": [
+      "Matrah\\s*:?\\s*([\\d.]+)\\s*TRY"
+    ],
+    "tax_kdv_patterns": [
+      "Katma\\s*Deger\\s*Vergis[ıi][^\\n]*?([\\d.]+)\\s*$"
+    ],
+    "tax_otv_patterns": [
+      "[OÖ]zel\\s*[İI]letişim\\s*Vergis[ıi][^\\n]*?([\\d.]+)\\s*$"
+    ]
+  }
+}

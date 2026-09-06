@@ -1,0 +1,32 @@
+{
+  "name": "SAGENİT YÖNETİM",
+  "version": "1.0",
+  "created": "2026-09-06",
+  "parties_separator": "sayin_uppercase",
+  "supplier": {
+    "name_extraction": "auto",
+    "name_pattern": "SAGENİT\\s*YÖNETİM\\s*HİZMETLERİ[\\s\\S]*?LİMİTED\\s*ŞİRKETİ\\b"
+  },
+  "customer": {
+    "name_extraction": "sayin_line",
+    "city_format": "district_slash_city",
+    "vkn_pattern": "Vergi\\s*No[\\s\\S]*?(7342774777)\\b"
+  },
+  "items": {
+    "type": "text_based",
+    "item_pattern": "^\\d+\\s+(?P<name>.+?)\\s+(?P<qty>[\\d.]+,?\\d*)\\s+(?P<unit>\\S+)\\s+(?P<price>[\\d.]+(?:,\\d+)?)\\s*TL\\s+%(?P<vat_rate>\\d+)[,.]\\d+\\s+(?P<vat_amount>[\\d.]+,\\d{2})\\s*TL\\s+(?P<total>[\\d.]+,\\d{2})\\s*TL\\s*$",
+    "skip_patterns": ["Toplam", "Matrah", "KDV", "Hesaplanan", "Vergi", "İndirim"]
+  },
+  "totals": {
+    "gross_patterns": [
+      "Vergiler\\s*Dahil\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "[OÖ]denecek\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "net_patterns": [
+      "Mal\\s*Hizmet\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "tax_kdv_patterns": [
+      "Hesaplanan\\s*(?:Katma\\s*De[ğg]er\\s*Vergis[ıi]|KDV).*?([\\d.]+,\\d{2})"
+    ]
+  }
+}

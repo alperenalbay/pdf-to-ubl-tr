@@ -1,0 +1,31 @@
+{
+  "name": "M.M.TİFTİK KARDEŞLER",
+  "version": "1.0",
+  "created": "2026-09-06",
+  "parties_separator": "sayin_uppercase",
+  "supplier": {
+    "name_extraction": "auto"
+  },
+  "customer": {
+    "name_extraction": "sayin_line",
+    "city_format": "district_slash_city"
+  },
+  "items": {
+    "type": "table_based",
+    "column_map": ["no", "name", "qty", "price", "total", "vat_rate", "vat_amount"]
+  },
+  "totals": {
+    "gross_patterns": [
+      "Vergiler\\s*Dahil\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "[OÖ]denecek\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "net_patterns": [
+      "Mal\\s*Hizmet\\s*Toplam\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "KDV\\s*Matrah[ıi]?\\(?\\s*%?\\d*\\)?\\s*[: ]?\\s*([\\d.]+,\\d{2})",
+      "Vergi\\s*Hariç\\s*Tutar[ıi]?\\s*[: ]?\\s*([\\d.]+,\\d{2})"
+    ],
+    "tax_kdv_patterns": [
+      "Hesaplanan\\s*(?:Katma\\s*De[ğg]er\\s*Vergis[ıi]|KDV).*?([\\d.]+,\\d{2})"
+    ]
+  }
+}

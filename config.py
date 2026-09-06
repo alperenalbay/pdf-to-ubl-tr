@@ -27,9 +27,13 @@ UBL_NAMESPACES = {
 REGEX_PATTERNS = {
     "invoice_no": [
         r"Fatura\s*No\s*:\s*([A-Z0-9\-/]+)",
+        r"Fatura\s*Numaras[ıi]\s*[: ]?\s*([A-Z0-9\-/]+)",
+        r"Fatura\s*No\s+([A-Z0-9\-/]+)",
         r"FATURA\s*NO\s*:\s*([A-Z0-9\-/]+)",
         r"Fatura\s*ID\s+([A-Z0-9\-/]+)",
+        r"FATURA\s*ID\s*[: ]?\s*(\d{10,})\b",
         r"(?:FATURA\s*NO|Invoice\s*No)[:\s]*([A-Z0-9\-/]+)",
+        r"FATURA\s*NO\s*[: ]?\s*([A-Z0-9\-/]+)",
         r"\b([A-Z]{2,3}\d{10,})\b",
     ],
     "ettn_uuid": [
@@ -38,8 +42,9 @@ REGEX_PATTERNS = {
     ],
     "date": [
         r"Fatura\s*Tarihi\s*:\s*(\d{2})-(\d{2})-(\d{4})",
-        r"(?:Tarih)[:\s]*(\d{2})[.\-/](\d{2})[.\-/](\d{4})",
-        r"(\d{2})[.\-/](\d{2})[.\-/](\d{4})",
+        r"Fatura\s*Tarihi\s*[: ]?\s*(\d{2})\s*-\s*(\d{2})\s*-\s*(\d{4})",
+        r"(?:Tarih|Tarihi)[:\s]*(\d{2})[./\-](\d{2})[./\-](\d{4})",
+        r"(\d{2})[./\-](\d{2})[./\-](\d{4})",
     ],
     "time": [
         r"Olu[sş]turma\s*Zaman[ıi]\s*:\s*(\d{2}:\d{2}:\d{2})",
@@ -61,7 +66,7 @@ REGEX_PATTERNS = {
         r"Vergi\s*Dairesi\s*:\s*(.+?)(?:\s*$|\n)",
     ],
     "profile_id": [
-        r"Senaryo\s*:\s*(\w+)",
+        r"Senaryo\s*:?\s*(\w+)",
         r"(?:Profile\s*ID|Profil)[:\s]*(\w+)",
     ],
     "total_gross": [
@@ -69,14 +74,22 @@ REGEX_PATTERNS = {
         r"(?:Toplam\s*Tutar|Toplam)[:\s]*([\d.]+,\d{2})\s*(?:TL|$)",
         r"TOPLAM\s*FATURA\s*TUTARI\s+([\d.]+,\d{2})",
         r"ÖDENECEK\s*TOPLAM\s+([\d.]+,\d{2})",
+        r"[OÖ]denecek\s*Tutar[ıi]?\s*:?\s*([\d.]+,\d{2})",
+        r"FATURA\s*TUTARI(?:\s*\(TL\))?\s*:?\s*([\d.]+(?:,\d+)?)\s*(?:TL|TRY)",
+        r"[OÖ]denecek\s*Tutar[ıi]?\s*:?\s*([\d.]+(?:,\d+)?)\s*(?:TL|TRY)",
     ],
     "total_net": [
-        r"Mal\s*Hizmet\s*Toplam\s*Tutar[ıi]?\s+([\d.]+,\d{2})",
+        r"Mal\s*/?\s*Hizmet\s*Toplam\s*Tutar[ıi]?\s*[: ]?\s*([\d.]+,\d{2})",
+        r"Mal\s*ve\s*Hizmet\s*Toplam\s*Tutar[ıi]?\s*[: ]?\s*([\d.]+,\d{2})",
+        r"Malzeme[ıi]?\s*/\s*Hizmet\s*Toplam\s*Tutar[ıi]?\s*[: ]?\s*([\d.]+,\d{2})",
+        r"Matrah\s*KDV\s*\(%?\d+\)?\s*[: ]?\s*([\d.]+,\d{2})",
+        r"KDV\s*Matrah[ıi]?\(?\s*%?\d*\)?\s*[: ]?\s*([\d.]+,\d{2})",
+        r"Vergi\s*Hariç\s*Tutar[ıi]?\s*[: ]?\s*([\d.]+,\d{2})",
         r"(?:Matrah|Net\s*(?:Mal\s*)?De[ğg]eri)[:\s]*([\d.]+,\d{2})",
         r"KDV\s*%\d+\s*\(Matrah\s+([\d.]+[\d.]*)",
     ],
     "total_tax_kdv": [
-        r"Hesaplanan\s*KDV.*?([\d.]+,\d{2})",
+        r"Hesaplanan\s*(?:Katma\s*De[ğg]er\s*Vergis[ıi]|Kdv|KDV).*?([\d.]+,\d{2})",
         r"(?:KDV\s*(?:Toplam[ıi]|Tutar[ıi]|Tutar))[:\s]*([\d.]+,\d{2})",
         r"DEVLETE\s*[OÖ]DENEN\s*VERG[Iİ]LER\s*TOPLAMI\s+([\d.]+,\d{2})",
         r"KDV\s*%\d+.*?([\d.]+,\d{2})",
@@ -195,4 +208,8 @@ def get_template_metadata(template: dict) -> dict:
         "item_header_pattern": template.get("items", {}).get("header_pattern"),
         "item_skip_patterns": template.get("items", {}).get("skip_patterns", []),
         "item_break_patterns": template.get("items", {}).get("break_patterns", []),
+        "item_column_map": template.get("items", {}).get("column_map", []),
+        "customer_start": template.get("customer", {}).get("start_regex"),
+        "customer_vkn_pattern": template.get("customer", {}).get("vkn_pattern"),
+        "supplier_name_pattern": template.get("supplier", {}).get("name_pattern"),
     }

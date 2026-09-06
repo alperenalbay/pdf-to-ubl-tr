@@ -116,6 +116,7 @@ class InvoiceParser:
         else:
             self.patterns = REGEX_PATTERNS
             self.template_meta = {}
+        self.template = template
 
     def parse(self, text: str, source_file: str = "", tables: list = None) -> InvoiceData:
         invoice = InvoiceData(raw_text=text, source_file=source_file)
@@ -174,7 +175,14 @@ class InvoiceParser:
         self._add_warnings(invoice)
 
         # ── OTOMATİK TESPİT: Başarısız parse → heuristic analiz ──
-        if not invoice.line_items or invoice.total_gross <= 0:
+        # Sadece şablon yokken/yetersizken dene; açık şablon ile eşleşen
+        # (örn. 0-TL Vodafone) sonucu bozma.
+        no_template = (
+            self.template is None
+            or str(self.template.get("name", "")).startswith("auto")
+            or self.template.get("_auto")
+        )
+        if (not invoice.line_items or invoice.total_gross <= 0) and no_template:
             invoice = self._try_auto_detect(text, source_file, tables, invoice)
 
         return invoice
@@ -277,8 +285,8 @@ class InvoiceParser:
                 invoice.issue_time = clean
 
         inv_type = self._search_first(text, "invoice_type")
-        if inv_type and inv_type.upper() in ("IADE",):
-            invoice.invoice_type = "IADE"
+        if inv_type and inv_type.upper() in ("SATIS", "IADE", "TEVKIFAT"):
+            invoice.invoice_type = inv_type.upper()
 
         profile = self._search_first(text, "profile_id")
         if profile:
@@ -313,22 +321,43 @@ class InvoiceParser:
         """
         sayin_idx = -1
         for i, line in enumerate(lines):
-            # "Sayın," (virgüllü) veya "SAYIN" (virgülsüz, TTNET) formatını eşleştir
-            if re.search(r"Say.+n[\s,]", line.strip(), re.IGNORECASE):
+            # "Sayın," (virgüllü), "SAYIN" (virgülsüz) veya yalnız "SAYIN" satırı
+            if re.search(r"Say\w{0,3}n\b", line.strip(), re.IGNORECASE):
                 sayin_idx = i
                 break
 
+        # Müşteri bloğunun başladığı satır indeksi.
+        # SAYIN varsa ondan sonrasıdır; yoksa şablondaki customer_start regex'i kullanılır.
+        customer_after = sayin_idx + 1 if sayin_idx >= 0 else None
+        if customer_after is None:
+            cs = (self.template_meta or {}).get("customer_start")
+            if cs:
+                try:
+                    cs_re = re.compile(cs, re.IGNORECASE)
+                except re.error:
+                    cs_re = None
+                if cs_re:
+                    for i, line in enumerate(lines):
+                        if cs_re.search(line):
+                            customer_after = i + 1
+                            break
+
         # Metadata bitiş göstergeleri
         metadata_starts = re.compile(
-            r"(?:.zelle.tirme\s+No|Senaryo\s*:|Fatura\s+No\s*:|Fatura\s+Tarihi|Fatura\s+Tipi|Olu.turma\s+Zaman)",
+            r"(?:.zelle.tirme\s+No|Senaryo\s*:|Fatura\s+(?:No|ID)\s*:|FATURA\s*ID|Fatura\s+Tarihi|"
+            r"Fatura\s+Tipi|Olu.turma\s+Zaman|İrsaliye\s*No|İrsaliye\s+Tarihi)",
             re.IGNORECASE
         )
 
         # ─── SATICI BLOĞU: line 0 (header label) ile Sayın, arası ──
         supplier_lines = []
-        if sayin_idx > 0:
-            supplier_lines = [l.strip() for l in lines[1:sayin_idx] if l.strip()]
-        elif sayin_idx == -1:
+        if customer_after is not None and customer_after > 0:
+            start = 0
+            # 0. satır "e-Arşiv Fatura" gibi bir belge etiketi ise atla
+            if lines and re.search(r"e-Ar.siv\s+Fatura|e-Fatura|INVOICE|\bFATURA\b", lines[0], re.IGNORECASE):
+                start = 1
+            supplier_lines = [l.strip() for l in lines[start:customer_after] if l.strip()]
+        else:
             supplier_lines = [l.strip() for l in lines[1:] if l.strip()]
 
         mernis_no = ""
@@ -478,8 +507,9 @@ class InvoiceParser:
             if re.search(r"Say.+n", s, re.IGNORECASE):
                 continue
 
-            # Sayıcı satırlar (EArşiv vs) atla
-            if re.search(r"e-Ar.siv\s+Fatura|e-Fatura", s, re.IGNORECASE):
+            # Sayıcı satırlar: yalnızca "e-Fatura" / "e-Arşiv Fatura" etiketinin tamamıysa atla
+            # (satır SONUNDA etiket içeren şirket adları atlanmamalı: "SANAYİ VE TİCARET e-Fatura")
+            if re.match(r"^(?:e-Fatura|e-Ar.siv\s+Fatura)\s*$", s, re.IGNORECASE):
                 continue
 
             # Tarih/saat satırlarını atla (ör: "19.01.2026 13:35 EFATURA")
@@ -492,23 +522,47 @@ class InvoiceParser:
 
             # Hala isim tespit edilmediyse ve yeterince uzunsa → muhtemelen satıcı adı
             if not supplier_name and len(s) > 3:
-                has_company = any(kw.upper() in s.upper() for kw in SUPPLIER_KEYWORDS)
+                # Satır sonundaki belge etiketini isimden ayıkla (SAGENİT: "SANAYİ VE TİCARET e-Fatura")
+                cand = re.sub(r"\s*(?:e-Fatura|e-Ar.siv\s+Fatura)\s*$", "", s, flags=re.IGNORECASE).strip()
+                if len(cand) <= 3:
+                    cand = s
+                has_company = any(kw.upper() in cand.upper() for kw in SUPPLIER_KEYWORDS)
                 if has_company:
-                    supplier_name = s
+                    supplier_name = cand
+
+        # Template ile açık satıcı adı kalıbı (çok satıra yayılan isimler için): keyword sezgisinden öncelikli
+        sp = (self.template_meta or {}).get("supplier_name_pattern")
+        if sp:
+            sm = None
+            try:
+                sm = re.search(sp, "\n".join(supplier_lines), re.IGNORECASE)
+            except re.error:
+                sm = None
+            if sm:
+                try:
+                    name_frag = sm.group(1) or sm.group(0)
+                except IndexError:
+                    name_frag = sm.group(0)
+                supplier_name = re.sub(r"\s*(?:e-Fatura|e-Ar.siv\s+Fatura)\s*", " ", name_frag).strip()
+                supplier_name = re.sub(r"\s+", " ", supplier_name).strip()
 
         # Company keyword ile bulunamadıysa, ilk anlamlı satırı al
         if not supplier_name and supplier_lines:
             for s in supplier_lines:
                 if len(s) > 3 and not re.match(r"^\d", s):
-                    if not re.search(r"(?:E-Posta|Vergi|TCKN|No:|e-Ar.siv|Fatura)", s, re.IGNORECASE):
+                    if not re.search(
+                        r"(?:E-Posta|Vergi|TCKN|VKN|No:|e-Ar.siv|Fatura|Tel:|Faks:|Mah\.|Cad\.|Sok\.|Bulvar|"
+                        r"Sokak|Apartman|^\d{5}\s|[0-9]/\d|MERSIS|SICIL)", s, re.IGNORECASE
+                    ):
                         supplier_name = s
                         break
 
         address = ", ".join(address_parts) if address_parts else ""
 
-        # VKN: Eğer satıcının TCKN'si varsa VKN arama (şahıs firması)
+        # VKN: Eğer satıcının TCKN'si yoksa, satıcı bloğu içinde VKN ara (şahıs firması)
         if not supplier_vkn and not supplier_tckn:
-            all_nums_10 = re.findall(r"\b(\d{10})\b", text)
+            supplier_txt = "\n".join(supplier_lines)
+            all_nums_10 = re.findall(r"\b(\d{10})\b", supplier_txt)
             for n in all_nums_10:
                 if n != mernis_no[:10]:
                     supplier_vkn = n
@@ -527,22 +581,23 @@ class InvoiceParser:
         invoice.supplier_building_no = supplier_building_no
 
         # ─── MÜŞTERİ BLOĞU: Sayın, ile metadata arası ─────────
-        if sayin_idx < 0:
+        if customer_after is None:
             return
 
         # SAYIN satırından müşteri adını çıkar (TTNET: "SAYIN MÜŞTERİ ADI SON ÖDEME...")
-        sayin_line = lines[sayin_idx].strip()
         customer_name_from_sayin = ""
-        # "Say" + word chars (SAYIN) + space + lazy capture until SON/Tarih/Fatura/ETTN/Vergi/end
-        sayin_name_match = re.search(
-            r"Say\w*\s+(.+?)(?:\s+SON\b|\s+Tarih\b|\s+Fatura\b|\s+ETTN\b|\s+Vergi\b|$)",
-            sayin_line, re.IGNORECASE
-        )
-        if sayin_name_match:
-            customer_name_from_sayin = sayin_name_match.group(1).strip()
+        if sayin_idx >= 0:
+            sayin_line = lines[sayin_idx].strip()
+            # "Say" + word chars (SAYIN) + space + lazy capture until SON/Tarih/Fatura/ETTN/Vergi/end
+            sayin_name_match = re.search(
+                r"Say\w*\s+(.+?)(?:\s+SON\b|\s+Tarih\b|\s+Fatura\b|\s+ETTN\b|\s+Vergi\b|$)",
+                sayin_line, re.IGNORECASE
+            )
+            if sayin_name_match:
+                customer_name_from_sayin = sayin_name_match.group(1).strip()
 
         customer_lines = []
-        for i in range(sayin_idx + 1, len(lines)):
+        for i in range(customer_after, len(lines)):
             s = lines[i].strip()
             if not s:
                 continue
@@ -655,9 +710,65 @@ class InvoiceParser:
             # Ama metadata veya toplam satırlarını isim olarak alma
             if not customer_name and len(c) > 2:
                 if not re.search(r"(?:TUTAR|Toplam|ÖDEME|ETTN|SONRAKİ|Senaryo|Fatura)", c, re.IGNORECASE):
-                    customer_name = c
+                    # Satır başındaki e-posta önekini at (SAGENİT: "info@sagenit.com REGNUM...")
+                    name_cand = re.sub(r"^\s*\S+@\S+\s+", "", c).strip()
+                    if not name_cand:
+                        name_cand = c
+                    customer_name = name_cand
 
         customer_address = ", ".join(cust_address_parts) if cust_address_parts else ""
+
+        # SAYIN sonrası satırlarda müşteri VKN / vergi dairesi ara (metadata satırlarından sonra)
+        if customer_after is not None:
+            tail_text = "\n".join(lines[customer_after:])
+            if not customer_vkn and not customer_tckn:
+                vp = (self.template_meta or {}).get("customer_vkn_pattern")
+                m = None
+                if vp:
+                    try:
+                        m = re.search(vp, tail_text, re.IGNORECASE)
+                    except re.error:
+                        m = None
+                if not m:
+                    # Aynı satır içinde etiket+numara (satır atlaması yanlış tarafa kaçabilir)
+                    m = re.search(r"\bVKN[ \t]*:?[ \t]*(\d{10})\b", tail_text)
+                if not m:
+                    m = re.search(r"Vergi\s*No[ \t:]{0,4}(\d{10})\b", tail_text)
+                if m and m.group(1) != getattr(invoice, "supplier_vkn", ""):
+                    customer_vkn = m.group(1)
+            if not customer_tax_office:
+                m = re.search(r"Vergi\s*Dairesi\s*:?\s*([^\n,]+)", tail_text)
+                if m:
+                    vd_txt = m.group(1).strip()
+                    vd_txt = re.split(
+                        r"\s+(?:Fatura\s*(?:No|Tipi|Tarihi|Saati)|İrsaliye|Müşteri\s*No|Düzenleme)",
+                        vd_txt, flags=re.IGNORECASE,
+                    )[0].strip()
+                    if 1 < len(vd_txt) <= 40:
+                        customer_tax_office = vd_txt
+
+        # Metadata satırları müşteri bloğuyla iç içe olduğunda (p28 ADALI gibi)
+        # müşteri adı hala boşsa, SAYIN sonrasında ilk anlamlı satırı al
+        if not customer_name and not customer_name_from_sayin and customer_after is not None:
+            for i in range(customer_after, len(lines)):
+                s = lines[i].strip()
+                if not s:
+                    continue
+                if metadata_starts.search(s):
+                    continue
+                if re.search(
+                    r"(?:Senaryo|Fatura\s+(?:No|Tipi|Tarihi|Saati)|İrsaliye|ETTN|Versiyon|"
+                    r"Toplam|Matrah|Bakiye|Vadeler|Vade|Sıra\b)",
+                    s, re.IGNORECASE,
+                ):
+                    continue
+                if re.match(r"^\d{1,6}\b", s) and re.search(r"TL|TRY", s):
+                    continue
+                if re.search(r"(?:E-Posta|Web\s*Sitesi|Tel\s*:|Faks)", s, re.IGNORECASE):
+                    continue
+                if len(s) > 2:
+                    customer_name = s
+                    break
 
         # Müşteri adı: her zaman SAYIN satırından gelen ismi tercih et
         if customer_name_from_sayin:
@@ -675,12 +786,25 @@ class InvoiceParser:
 
     # ─── TABLE-BASED EXTRACTION ─────────────────────────────────
 
+    _DEFAULT_COLUMN_MAP = ["no", "code", "name", "qty", "price", "vat_rate", "vat_amount", "other", "total"]
+
+    def _get_column_map(self):
+        """Şablondan sütun şemasını alır; yoksa varsayılan TOLASOFT düzenini kullanır."""
+        colmap = self.template_meta.get("item_column_map") or []
+        if not colmap:
+            return list(self._DEFAULT_COLUMN_MAP)
+        # Eksik sütun isimleri varsa boş string ile doldur
+        return colmap
+
     def _extract_from_tables_raw(self, tables: list):
         """Tablolardan kalem ve toplamları çıkarır, doğrudan list/dict döner."""
         items = []
         totals = {"gross": 0.0, "net": 0.0, "tax": 0.0}
 
+        colmap = self._get_column_map()
+
         for table in tables:
+            header = self._detect_header_row(table)
             for row in table:
                 if not row or not any(row):
                     continue
@@ -688,9 +812,12 @@ class InvoiceParser:
                 first_cell = (row[0] or "").strip()
 
                 if first_cell.isdigit():
-                    item = self._parse_table_line_item(row, int(first_cell))
+                    item = self._parse_table_line_item(row, int(first_cell), colmap)
                     if item:
                         items.append(item)
+                    continue
+
+                if row is header:
                     continue
 
                 label = " ".join(str(c or "") for c in row).strip()
@@ -699,16 +826,36 @@ class InvoiceParser:
                 if value <= 0:
                     continue
 
-                if "Vergiler Dahil" in label or "denecek Tutar" in label:
-                    totals["gross"] = value
-                elif "Hesaplanan KDV" in label:
+                # "Vergiler Dahil" her zaman tercih edilir (TEVKIFAT'ta Ödenecek düşük olur)
+                gross_m = re.search(r"Vergiler\s*Dahil|denecek\s*Tutar|FATURA\s*TUTARI", label, re.IGNORECASE)
+                if gross_m:
+                    if "Vergiler Dahil" in label or totals["gross"] <= 0:
+                        totals["gross"] = value
+                elif re.search(r"Hesaplanan\s+(?:Katma\s+De[ğg]er\s+Vergis[ıi]|Kdv|KDV)|KDV\s*GER[ÇC]EK", label, re.IGNORECASE):
                     totals["tax"] = value
-                elif "Matrah" in label:
+                elif re.search(r"Mal\s*(?:/|ve)?\s*Hizmet|Malzeme[ıi]?\s*/\s*Hizmet", label, re.IGNORECASE):
                     totals["net"] = value
-                elif "Mal Hizmet Toplam" in label:
+                elif re.search(r"\bMatrah|Vergi\s*Hariç\s*Tutar", label):
                     totals["net"] = value
 
         return items, totals
+
+    def _detect_header_row(self, table: list):
+        """Tablonun başlık satırını döndürür (Sıra No / No ile başlayan)."""
+        for row in table:
+            if not row or not any(row):
+                continue
+            first_cell = (row[0] or "").strip().lower()
+            if re.match(r"s[iı]ra\s*no?.*", first_cell) or first_cell.startswith("sıra") or first_cell == "no":
+                return row
+        return None
+
+    def _get_cell(self, row, colmap, field):
+        """Sütun şemasına göre belirtilen alanın hücre değerini döndürür."""
+        for idx, name in enumerate(colmap):
+            if name == field:
+                return (row[idx] or "").strip() if idx < len(row) else ""
+        return ""
 
     def _extract_from_tables(self, invoice: InvoiceData, tables: list):
         """pdfplumber tablolarından kalem ve toplam bilgilerini çıkarır."""
@@ -722,6 +869,39 @@ class InvoiceParser:
             invoice.total_net = totals["net"]
         if totals["tax"] > 0:
             invoice.total_tax = totals["tax"]
+
+    def _build_item_from_groups(self, groups: dict, name: str, count: int) -> Optional[InvoiceLineItem]:
+        """Şablon item_pattern named-group'larından kalem üretir.
+
+        Desteklenen named group'lar: qty, price, vat_rate, vat_amount, total
+        """
+        qty = self._parse_quantity(groups.get("qty", ""))
+        price = self._parse_turkish_number(groups.get("price", "")) if groups.get("price") else 0.0
+        vat_rate = float(groups["vat_rate"]) if groups.get("vat_rate") else 20.0
+        vat_amount = self._parse_turkish_number(groups.get("vat_amount", "")) if groups.get("vat_amount") else 0.0
+        total = self._parse_turkish_number(groups.get("total", "")) if groups.get("total") else 0.0
+
+        item = InvoiceLineItem(
+            line_id=count + 1,
+            name=name,
+            quantity=qty,
+            unit_price_net=price,
+            tax_rate=vat_rate,
+        )
+
+        if total > 0:
+            item.line_total_net = total
+        elif price > 0 and qty > 0:
+            item.line_total_net = round(price * qty, 2)
+
+        if vat_amount > 0:
+            item.tax_amount = vat_amount
+        else:
+            item.tax_amount = round(item.line_total_net * vat_rate / 100, 2)
+
+        item.gross_price = round(price * (1 + vat_rate / 100), 2) if price > 0 else 0.0
+
+        return item
 
     def _extract_customer_from_table0(self, invoice: InvoiceData, tables: list):
         """Table T0'nun sol hücresinden eksik müşteri bilgilerini tamamlar.
@@ -805,23 +985,32 @@ class InvoiceParser:
         if customer_postal_code and not invoice.customer_postal_code:
             invoice.customer_postal_code = customer_postal_code
 
-    def _parse_table_line_item(self, row: list, line_id: int) -> Optional[InvoiceLineItem]:
+    def _parse_table_line_item(self, row: list, line_id: int, colmap: list = None) -> Optional[InvoiceLineItem]:
         """Tablo satırından kalem ürünü parse eder.
 
-        PDF yapısı:
+        Varsayılan PDF yapısı (TOLASOFT):
         [sira_no, kod, ad, miktar, birim_fiyat, kdv%, kdv_tutari, diger, tutar]
+        Farklı sütun düzenleri 'colmap' (sütun şeması) ile desteklenir.
         'Birim Fiyat' = net birim fiyat, 'Tutar' = net satır toplamı
         """
-        if len(row) < 6:
+        if colmap is None:
+            colmap = self._DEFAULT_COLUMN_MAP
+        if len(row) < 4:
             return None
 
-        stock_code = (row[1] or "").strip()
-        name = (row[2] or "").strip()
-        quantity_str = (row[3] or "").strip()
-        price_str = (row[4] or "").strip()
-        kdv_percent_str = (row[5] or "").strip()
-        kdv_amount_str = (row[6] or "").strip() if len(row) > 6 else ""
-        total_str = (row[8] or "").strip() if len(row) > 8 else (row[7] or "").strip() if len(row) > 7 else ""
+        def get(field: str) -> str:
+            for idx, name in enumerate(colmap):
+                if name == field:
+                    return (row[idx] or "").strip() if idx < len(row) else ""
+            return ""
+
+        stock_code = get("code")
+        name = get("name")
+        quantity_str = get("qty")
+        price_str = get("price")
+        kdv_percent_str = get("vat_rate")
+        kdv_amount_str = get("vat_amount")
+        total_str = get("total")
 
         quantity = self._parse_quantity(quantity_str)
         unit_price_net = self._parse_turkish_number(price_str) if price_str else 0.0
@@ -854,12 +1043,14 @@ class InvoiceParser:
         return item
 
     def _parse_quantity(self, qty_str: str) -> float:
-        """Miktar string'ini sayıya çevirir. '3 Boy', '7 Adet', '1.000 Adet' formatları."""
+        """Miktar string'ini sayıya çevirir. '3 Boy', '7 Adet', '1.000 Adet', '3.506,66|Ton' formatları."""
         if not qty_str:
             return 1.0
         qty_str = qty_str.strip()
-        qty_str = re.sub(r"\s*(Adet|Boy|Kg|Lt|Mt|M2|M3|Set|Paket|Kutu|Palet|Ton|gram|litre|metre).*", "", qty_str, flags=re.IGNORECASE)
-        qty_str = qty_str.strip()
+        # sayısal olmayan ilk karakterden itibaren her şeyi at (birim, |Ton, vs.)
+        first_bad = re.search(r"[^\d.,\-]", qty_str)
+        if first_bad:
+            qty_str = qty_str[:first_bad.start()]
         return self._parse_turkish_number(qty_str) if qty_str else 1.0
 
     def _parse_kdv_percent(self, kdv_str: str) -> float:
@@ -892,6 +1083,37 @@ class InvoiceParser:
         """
         items = []
         in_items_section = False
+
+        # ── Şablon tabanlı metin pattern'i (tablosuz formatlar için) ──
+        item_pattern = self.template_meta.get("item_pattern")
+        if item_pattern:
+            compiled = re.compile(item_pattern)
+            skip_compiled = [re.compile(p, re.IGNORECASE) for p in self.template_meta.get("item_skip_patterns", [])]
+            parsed = []
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                m = compiled.match(stripped)
+                if not m:
+                    continue
+                groups = m.groupdict()
+                name = groups.get("name", "").strip()
+                if not name:
+                    continue
+                # Bir sonraki satır isim devamı olabilir
+                if i + 1 < len(lines) and lines[i + 1].strip():
+                    nxt = lines[i + 1].strip()
+                    if compiled.match(nxt) is None and not re.search(r"(?:TL|TRY)\s*$|^\d", nxt):
+                        name = f"{name} {nxt}"
+                if any(sc.search(name) for sc in skip_compiled):
+                    continue
+                item = self._build_item_from_groups(groups, name, len(parsed))
+                if item:
+                    parsed.append(item)
+            if parsed:
+                invoice.line_items = parsed
+                return
 
         for i, line in enumerate(lines):
             stripped = line.strip()
