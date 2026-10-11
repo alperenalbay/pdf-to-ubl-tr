@@ -466,43 +466,92 @@ class SupplierSchemeTest(unittest.TestCase):
         self.assertEqual(gen._supplier_scheme(self.TCKN), "TCKN")
 
 
-class KnownDefectTaxRateTruncationTest(unittest.TestCase):
-    """# KNOWN DEFECT — P1-4: KDV yüzdesi int() ile kesiliyor.
+class TaxRateFormattingTest(unittest.TestCase):
+    """KDV oranının yazımı.
 
-    str(int(tax_rate)) kullanıldığı için %7.5 → "7". TaxAmount doğru
-    kalırken Percent yanlış çıkıyor, yani tutar ile oran tutarsızlaşıyor.
-
-    Türk KDV'si 1/10/20 tam sayı olduğu için pratikte tetiklenmesi zor;
-    gerçek risk float yuvarlama (örn. 19.9999999 → "19"). Düzeltme:
-    ondalık basamağı koruyan biçimlendirme (örn. %g / round).
-
-    Düzeltildiğinde: güncel davranış "7" yerine "7.5" beklenmeli.
+    Düzeltme öncesi `str(int(rate))` kullanılıyordu; bu ondalık oranları
+    kırpıyordu (7.5 -> "7") ve float artığını sessizce bozuyordu
+    (19.999999999999996 -> "19"). Artık `%g` ile yazılıyor.
     """
 
-    def test_fractional_rate_truncated_to_integer(self):
+    def _percent(self, root):
         cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
-        inv = make_invoice(
-            total_net=100.0, total_tax=7.5, total_gross=107.5, tax_rate=7.5,
-            line_items=[make_item(line_total_net=100.0, unit_price_net=100.0,
-                                  tax_rate=7.5, tax_amount=7.5)],
-        )
-        root = ET.fromstring(UBLTriGenerator().generate(inv))
-        percent = root.find(f"{cac}TaxTotal/{cac}TaxSubtotal/{cbc}Percent")
-        amount = root.find(f"{cac}TaxTotal/{cac}TaxSubtotal/{cbc}TaxAmount")
-        self.assertEqual(percent.text, "7")
-        self.assertEqual(amount.text, "7.50")
+        return root.find(f"{cac}TaxTotal/{cac}TaxSubtotal/{cbc}Percent").text
 
-    def test_float_rounding_boundary_is_at_risk(self):
-        """19.9999999 matematiksel olarak %20 ama int() ile 19 olur."""
+    def _scheme_name(self, root):
         cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
-        rate = 100 * 30 / 30  # tam sayıya yakın ama float artığı taşıyabilir
-        inv = make_invoice(
-            tax_rate=rate,
-            line_items=[make_item(tax_rate=rate)],
+        return root.find(f"{cac}TaxTotal/{cac}TaxSubtotal/{cac}TaxCategory/"
+                         f"{cac}TaxScheme/{cbc}Name").text
+
+    def _invoice_with_rate(self, rate, tax_amount=7.5):
+        return make_invoice(
+            total_net=100.0, total_tax=tax_amount,
+            total_gross=100.0 + tax_amount, tax_rate=rate,
+            line_items=[make_item(line_total_net=100.0, unit_price_net=100.0,
+                                  tax_rate=rate, tax_amount=tax_amount)],
         )
-        root = ET.fromstring(UBLTriGenerator().generate(inv))
-        percent = root.find(f"{cac}TaxTotal/{cac}TaxSubtotal/{cbc}Percent")
-        self.assertEqual(percent.text, str(int(rate)))
+
+    def test_fractional_rate_preserved(self):
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(7.5)))
+        self.assertEqual(self._percent(root), "7.5")
+
+    def test_amount_and_rate_agree(self):
+        """Tutar 7.50 iken oran da 7.5 — daha önce oran 7 yazıyordu."""
+        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(7.5)))
+        sub = root.find(f"{cac}TaxTotal/{cac}TaxSubtotal")
+        self.assertEqual(sub.find(cbc + "TaxAmount").text, "7.50")
+        self.assertEqual(sub.find(cbc + "Percent").text, "7.5")
+
+    def test_integer_rate_has_no_decimal_noise(self):
+        root = ET.fromstring(UBLTriGenerator().generate(make_invoice()))
+        self.assertEqual(self._percent(root), "20")
+        self.assertNotIn(".", self._percent(root))
+
+    def test_float_artifact_rounds_to_intended_rate(self):
+        """19.999999999999996 gerçekte %20; int() onu "19" yapıyordu."""
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(19.999999999999996, tax_amount=20.0)))
+        self.assertEqual(self._percent(root), "20")
+
+    def test_ordinary_division_artifact(self):
+        """20/100*100 gibi gerçek bölme artığı da bozulmamalı."""
+        rate = 20 / 100 * 100
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(rate, tax_amount=20.0)))
+        self.assertEqual(self._percent(root), "20")
+
+    def test_scheme_name_matches_percent(self):
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(7.5)))
+        self.assertEqual(self._scheme_name(root), "KDV (%7.5)")
+
+    def test_line_level_rate_preserved_too(self):
+        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
+        root = ET.fromstring(UBLTriGenerator().generate(
+            self._invoice_with_rate(7.5)))
+        percent = root.find(f"{cac}InvoiceLine/{cac}TaxTotal/"
+                            f"{cac}TaxSubtotal/{cbc}Percent")
+        self.assertEqual(percent.text, "7.5")
+
+    def test_turkish_vat_rates_unchanged(self):
+        """1/10/20 görünümü değişmemeli — bu yüzden işe yaramaz kalmadı."""
+        gen = UBLTriGenerator()
+        for rate in (1, 10, 20):
+            with self.subTest(rate=rate):
+                root = ET.fromstring(gen.generate(
+                    self._invoice_with_rate(float(rate), tax_amount=float(rate))))
+                self.assertEqual(self._percent(root), str(rate))
+
+    def test_helper_directly(self):
+        gen = UBLTriGenerator()
+        for value, expected in [(20.0, "20"), (10.0, "10"), (1.0, "1"),
+                                (7.5, "7.5"), (18.5, "18.5"),
+                                (19.999999999999996, "20")]:
+            with self.subTest(rate=value):
+                self.assertEqual(gen._format_rate(value), expected)
 
 
 class KnownDefectEmptyExtensionTest(unittest.TestCase):

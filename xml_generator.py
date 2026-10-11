@@ -116,6 +116,19 @@ class UBLTriGenerator:
         self._add_sub(ref, "cbc:DocumentType", "ELEKTRONIK")
 
     @staticmethod
+    def _format_rate(rate: float) -> str:
+        """KDV oranını yazıma hazırlar.
+
+        `str(int(rate))` kullanılıyordu; bu iki şekilde veri bozuyordu:
+          - 7.5 -> "7"   (tutar 7.50 iken oran 7 yazılıyordu)
+          - 19.999999999999996 -> "19" (float artığı, oran 20 olmalı)
+
+        `%g` ikisini de çözer: tam sayıyı "20" olarak yazar (.0 gürültüsü
+        olmadan), ondalığı korur, kayan nokta artıklarını yuvarlar.
+        """
+        return f"{rate:g}"
+
+    @staticmethod
     def _supplier_scheme(value: str) -> str:
         """Satır kimliğinin şemasını uzunluğuna göre belirler.
 
@@ -239,11 +252,11 @@ class UBLTriGenerator:
                 {"currencyID": CURRENCY},
             )
             self._add_sub(tax_sub, "cbc:CalculationSequenceNumeric", str(index))
-            self._add_sub(tax_sub, "cbc:Percent", str(int(rate)))
+            self._add_sub(tax_sub, "cbc:Percent", self._format_rate(rate))
 
             tax_cat = self._add_cac_sub(tax_sub, "TaxCategory")
             tax_scheme = self._add_cac_sub(tax_cat, "TaxScheme")
-            self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{int(rate)})")
+            self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{self._format_rate(rate)})")
             self._add_sub(tax_scheme, "cbc:TaxTypeCode", DEFAULT_TAX_TYPE_CODE)
 
     @staticmethod
@@ -324,11 +337,11 @@ class UBLTriGenerator:
             {"currencyID": CURRENCY},
         )
         self._add_sub(tax_sub, "cbc:CalculationSequenceNumeric", str(item.line_id))
-        self._add_sub(tax_sub, "cbc:Percent", str(int(item.tax_rate)))
+        self._add_sub(tax_sub, "cbc:Percent", self._format_rate(item.tax_rate))
 
         tax_cat = self._add_cac_sub(tax_sub, "TaxCategory")
         tax_scheme = self._add_cac_sub(tax_cat, "TaxScheme")
-        self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{int(item.tax_rate)})")
+        self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{self._format_rate(item.tax_rate)})")
         self._add_sub(tax_scheme, "cbc:TaxTypeCode", DEFAULT_TAX_TYPE_CODE)
 
         item_elem = self._add_cac_sub(line, "Item")
