@@ -338,46 +338,49 @@ class TaxTotalGroupingTest(unittest.TestCase):
         ]
         self.assertEqual(sorted(percents), ["10", "20"])
 
-    def test_no_lines_produces_no_subtotal(self):
-        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
+    def test_no_lines_is_rejected_before_grouping(self):
+        """Kalemsiz fatura gruplamaya hiç girmemeli.
+
+        Önceden "sıfır subtotal üretiyor" diye test ediliyordu; ama
+        `cac:InvoiceLine` UBL'de zorunlu, dolayısıyla belgenin kendisi
+        reddediliyor. `_group_by_tax_rate` bu yüzden boş listeyle
+        çağrılmıyor.
+        """
         inv = make_invoice(line_items=[], total_net=0.0, total_tax=0.0,
                            total_gross=0.0)
-        root = ET.fromstring(UBLTriGenerator().generate(inv))
-        total = root.find(cac + "TaxTotal")
-        self.assertEqual(len(total.findall(cac + "TaxSubtotal")), 0)
-        self.assertEqual(total.find(cbc + "TaxAmount").text, "0.00")
+        with self.assertRaises(ValueError) as ctx:
+            UBLTriGenerator().generate(inv)
+        self.assertIn("InvoiceLine", str(ctx.exception))
+
+    def test_grouping_helper_handles_empty_input(self):
+        """Yardımcı metot yine de boş girdide çökmemeli."""
+        self.assertEqual(UBLTriGenerator()._group_by_tax_rate([]), {})
 
 
 class IssueDateTest(unittest.TestCase):
     """Fatura tarihi eksikken davranış.
 
     Düzeltme öncesi `_add_additional_refs`, tarih yoksa sabit `2026-01-01`
-    yazıyordu — yasal belgeye uydurma tarih. Artık alan atlanıyor; eksik
-    tarih için `parse_warnings` zaten uyarı üretiyor.
+    yazıyordu — yasal belgeye uydurma tarih. Sonra alan atlandı; ama
+    `cbc:IssueDate` UBL 2.1'de zorunlu olduğu için bu sefer belge XSD'ye
+    göre **geçersiz** çıktı. Artık üretim hata fırlatıyor: geçersiz
+    belge yazmaktansa durmak yeğdir.
     """
 
-    def _dates_in_document(self, xml):
-        """Belgedeki tüm IssueDate değerleri."""
-        root = ET.fromstring(xml)
-        cbc = f"{{{NS_CBC}}}"
-        return [e.text for e in root.iter(cbc + "IssueDate")]
+    def test_missing_date_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            UBLTriGenerator().generate(make_invoice(issue_date=None))
+        self.assertIn("IssueDate", str(ctx.exception))
 
-    def test_missing_date_omits_additional_document_reference_date(self):
-        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
-        root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
-        ref = root.find(cac + "AdditionalDocumentReference")
-        self.assertIsNone(ref.find(cbc + "IssueDate"))
-
-    def test_missing_date_omits_header_date(self):
-        cbc = f"{{{NS_CBC}}}"
-        root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
-        self.assertIsNone(root.find(cbc + "IssueDate"))
-
-    def test_no_fabricated_date_anywhere(self):
-        """Belgenin hiçbir yerinde 2026-01-01 olmamalı."""
-        xml = UBLTriGenerator().generate(make_invoice(issue_date=None))
-        self.assertNotIn("2026-01-01", xml)
-        self.assertEqual(self._dates_in_document(xml), [])
+    def test_missing_date_produces_no_document_at_all(self):
+        """Alanı atlamak da çözüm değil: zorunlu alan eksikse belge XSD'ye
+        göre geçersizdir. Sessizce geçersiz dosya yazmaktansa dur."""
+        try:
+            UBLTriGenerator().generate(make_invoice(issue_date=None))
+        except ValueError:
+            pass
+        else:
+            self.fail("eksik zorunlu alanla üretim yapılmamalıydı")
 
     def test_present_date_is_written_in_both_places(self):
         cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
@@ -385,21 +388,6 @@ class IssueDateTest(unittest.TestCase):
         self.assertEqual(root.find(cbc + "IssueDate").text, "2026-10-11")
         ref = root.find(cac + "AdditionalDocumentReference")
         self.assertEqual(ref.find(cbc + "IssueDate").text, "2026-10-11")
-
-    def test_surrounding_fields_survive_missing_date(self):
-        """Tarih atlanınca referans bloğu dağıtmamalı."""
-        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
-        root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
-        ref = root.find(cac + "AdditionalDocumentReference")
-        self.assertEqual(ref.find(cbc + "ID").text, "2")
-        self.assertEqual(ref.find(cbc + "DocumentTypeCode").text, "GONDERIM_SEKLI")
-        self.assertEqual(ref.find(cbc + "DocumentType").text, "ELEKTRONIK")
-
-    def test_document_still_parses_without_date(self):
-        """Eksik tarih XML'i geçersiz kılmamalı."""
-        xml = UBLTriGenerator().generate(make_invoice(issue_date=None))
-        root = ET.fromstring(xml)
-        self.assertEqual(root.tag, f"{{{NS_ROOT}}}Invoice")
 
 
 class SupplierSchemeTest(unittest.TestCase):

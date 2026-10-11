@@ -19,11 +19,51 @@ from invoice_parser import InvoiceData, InvoiceLineItem
 class UBLTriGenerator:
     """UBL-TR formatında e-arşiv fatura XML'i üreten sınıf."""
 
+    #: UBL 2.1 InvoiceType'ta `minOccurs` belirtilmemiş, yani zorunlu olan
+    #: altı eleman: ID, IssueDate, AccountingSupplierParty,
+    #: AccountingCustomerParty, LegalMonetaryTotal, InvoiceLine.
+    #: Party ve LegalMonetaryTotal blokları her koşulda üretildiği için
+    #: burada denetlenebilenler şunlar.
+    MANDATORY = (
+        ("invoice_id", "cbc:ID (fatura numarası)"),
+        ("issue_date", "cbc:IssueDate (fatura tarihi)"),
+    )
+
     def __init__(self):
         self.ns = UBL_NAMESPACES
 
+    @classmethod
+    def _validate(cls, invoice: InvoiceData) -> None:
+        """UBL'nin zorunlu kıldığı alanlar dolu mu diye bakar.
+
+        Eksik zorunlu alanla üretilen belge XSD'ye göre **geçersizdir**.
+        Daha önce burada alan atlanıyordu; daha da kötüsü, tarih için sabit
+        bir değer uyduruluyordu. İkisi de kabul edilemez: geçersiz belge
+        sessizce yazılıyordu.
+
+        Bu yüzden üretim burada durur. Çağıran taraf (main.py) hatayı dosya
+        başına yakalayıp atlıyor, diğer faturalar işlenmeye devam ediyor.
+        """
+        eksikler = [
+            label for attr, label in cls.MANDATORY
+            if not getattr(invoice, attr, None)
+        ]
+        if not invoice.line_items:
+            eksikler.append("cac:InvoiceLine (fatura kalemleri)")
+
+        if eksikler:
+            raise ValueError(
+                "UBL-TR zorunlu alanları eksik, belge üretilemez: "
+                + ", ".join(eksikler)
+            )
+
     def generate(self, invoice: InvoiceData) -> str:
-        """InvoiceData'dan UBL-TR XML string'i üretir."""
+        """InvoiceData'dan UBL-TR XML string'i üretir.
+
+        Zorunlu alan eksikse `ValueError` fırlatır — geçersiz belge
+        yazmaktansa durmak yeğdir.
+        """
+        self._validate(invoice)
         root = self._build_root(invoice)
         self._add_ubl_extensions(root)
         self._add_header(root, invoice)
