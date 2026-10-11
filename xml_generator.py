@@ -190,7 +190,12 @@ class UBLTriGenerator:
             self._add_sub(tax_scheme, "cbc:Name", inv.customer_tax_office)
 
     def _add_tax_total(self, root: ET.Element, inv: InvoiceData):
-        """Vergi toplamını ekler."""
+        """Vergi toplamını ekler.
+
+        UBL her farklı KDV oranı için ayrı `cac:TaxSubtotal` ister. Kalemler
+        oranlarına göre gruplanır, grup içi matrah ve vergi toplanır.
+        Oranlar yükselen sırada yazılır ki çıktı belirlenimci olsun.
+        """
         tax_total = self._add_cac_sub(root, "TaxTotal")
         self._add_sub(
             tax_total, "cbc:TaxAmount",
@@ -198,24 +203,46 @@ class UBLTriGenerator:
             {"currencyID": CURRENCY},
         )
 
-        tax_sub = self._add_cac_sub(tax_total, "TaxSubtotal")
-        self._add_sub(
-            tax_sub, "cbc:TaxableAmount",
-            f"{inv.total_net:.2f}",
-            {"currencyID": CURRENCY},
-        )
-        self._add_sub(
-            tax_sub, "cbc:TaxAmount",
-            f"{inv.total_tax:.2f}",
-            {"currencyID": CURRENCY},
-        )
-        self._add_sub(tax_sub, "cbc:CalculationSequenceNumeric", "1")
-        self._add_sub(tax_sub, "cbc:Percent", str(int(inv.tax_rate)))
+        groups = self._group_by_tax_rate(inv.line_items)
+        for index, rate in enumerate(groups, start=1):
+            taxable, tax_amount = groups[rate]
+            tax_sub = self._add_cac_sub(tax_total, "TaxSubtotal")
+            self._add_sub(
+                tax_sub, "cbc:TaxableAmount",
+                f"{taxable:.2f}",
+                {"currencyID": CURRENCY},
+            )
+            self._add_sub(
+                tax_sub, "cbc:TaxAmount",
+                f"{tax_amount:.2f}",
+                {"currencyID": CURRENCY},
+            )
+            self._add_sub(tax_sub, "cbc:CalculationSequenceNumeric", str(index))
+            self._add_sub(tax_sub, "cbc:Percent", str(int(rate)))
 
-        tax_cat = self._add_cac_sub(tax_sub, "TaxCategory")
-        tax_scheme = self._add_cac_sub(tax_cat, "TaxScheme")
-        self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{int(inv.tax_rate)})")
-        self._add_sub(tax_scheme, "cbc:TaxTypeCode", DEFAULT_TAX_TYPE_CODE)
+            tax_cat = self._add_cac_sub(tax_sub, "TaxCategory")
+            tax_scheme = self._add_cac_sub(tax_cat, "TaxScheme")
+            self._add_sub(tax_scheme, "cbc:Name", f"KDV (%{int(rate)})")
+            self._add_sub(tax_scheme, "cbc:TaxTypeCode", DEFAULT_TAX_TYPE_CODE)
+
+    @staticmethod
+    def _group_by_tax_rate(items):
+        """Kalemleri KDV oranına göre gruplar.
+
+        Dönen: `{oran: (matrah_toplamı, vergi_toplamı)}`, oranlar yükselen sırada.
+
+        Kayan nokta artıklarının (19.9999999 gibi) sahte bir oran grubu
+        yaratmaması için anahtar 2 ondalığa yuvarlanarak atanır.
+        """
+        buckets = {}
+        for item in items:
+            rate = round(float(item.tax_rate), 2)
+            taxable, tax = buckets.get(rate, (0.0, 0.0))
+            buckets[rate] = (
+                taxable + float(item.line_total_net),
+                tax + float(item.tax_amount),
+            )
+        return {rate: buckets[rate] for rate in sorted(buckets)}
 
     def _add_monetary_total(self, root: ET.Element, inv: InvoiceData):
         """Para birimi toplamlarını ekler."""
