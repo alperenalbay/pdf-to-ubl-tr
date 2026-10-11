@@ -402,33 +402,68 @@ class IssueDateTest(unittest.TestCase):
         self.assertEqual(root.tag, f"{{{NS_ROOT}}}Invoice")
 
 
-class KnownDefectSignatorySchemeTest(unittest.TestCase):
-    """# KNOWN DEFECT — P1-3: SignatoryParty şema kimliği VKN'ye sabitlenmiş.
+class SupplierSchemeTest(unittest.TestCase):
+    """Satır kimliğinin şeması (VKN/TCKN).
 
-    _add_signature, sig_id TCKN olsa bile schemeID="VKN" yazıyor.
-    _add_supplier_party ise doğru davranıyor (uzunluğa bakıyor), yani iki
-    bölge aynı kuralı farklı uyguluyor.
+    Düzeltme öncesi `_add_signature`, `schemeID="VKN"`'yi sabitliyordu;
+    TCKN'li bir satıcıda kimlik TCKN olmasına rağmen VKN diye etiketleniyordu.
+    Aynı anda `_add_supplier_party` doğru hesaplıyordu, yani belgenin iki
+    bölgesi birbiriyle çelişiyordu.
 
-    Düzeltme: _add_signature da "VKN" if len(id)==10 else "TCKN" kullanmalı.
+    Kural artık `_supplier_scheme` içinde tek yerde: VKN 10 hane, TCKN 11.
     """
 
-    def test_tckn_signatory_is_labelled_vkn(self):
-        cbc, cac = f"{{{NS_CBC}}}", f"{{{NS_CAC}}}"
-        inv = make_invoice(supplier_vkn=None, supplier_tckn="12345678901")
-        root = ET.fromstring(UBLTriGenerator().generate(inv))
-        signatory = root.find(f"{cac}Signature/{cac}SignatoryParty/"
-                              f"{cac}PartyIdentification/{cbc}ID")
-        self.assertEqual(signatory.text, "12345678901")
-        self.assertEqual(signatory.get("schemeID"), "VKN")  # TCKN olmalıydı
+    VKN = "1234567890"      # 10 hane
+    TCKN = "12345678901"    # 11 hane
 
-    def test_supplier_party_resolves_scheme_correctly(self):
-        """Doğru davranışın nasıl olması gerektiğini sabitler."""
+    def _signatory_scheme(self, root):
         cbc, cac = f"{{{NS_CBC}}}", f"{{{NS_CAC}}}"
-        inv = make_invoice(supplier_vkn=None, supplier_tckn="12345678901")
+        e = root.find(f"{cac}Signature/{cac}SignatoryParty/"
+                      f"{cac}PartyIdentification/{cbc}ID")
+        return e.get("schemeID")
+
+    def _supplier_party_scheme(self, root):
+        cbc, cac = f"{{{NS_CBC}}}", f"{{{NS_CAC}}}"
+        e = root.find(f"{cac}AccountingSupplierParty/{cac}Party/"
+                      f"{cac}PartyIdentification/{cbc}ID")
+        return e.get("schemeID")
+
+    def test_tckn_supplier_signatory_is_tckn(self):
+        inv = make_invoice(supplier_vkn=None, supplier_tckn=self.TCKN)
         root = ET.fromstring(UBLTriGenerator().generate(inv))
-        pid = root.find(f"{cac}AccountingSupplierParty/{cac}Party/"
-                        f"{cac}PartyIdentification/{cbc}ID")
-        self.assertEqual(pid.get("schemeID"), "TCKN")
+        self.assertEqual(self._signatory_scheme(root), "TCKN")
+
+    def test_vkn_supplier_signatory_is_vkn(self):
+        inv = make_invoice(supplier_vkn=self.VKN, supplier_tckn=None)
+        root = ET.fromstring(UBLTriGenerator().generate(inv))
+        self.assertEqual(self._signatory_scheme(root), "VKN")
+
+    def test_both_regions_agree_on_tckn(self):
+        """Düzeltmenin asıl amacı: iki bölge aynı şemayı söylemeli."""
+        inv = make_invoice(supplier_vkn=None, supplier_tckn=self.TCKN)
+        root = ET.fromstring(UBLTriGenerator().generate(inv))
+        self.assertEqual(self._signatory_scheme(root),
+                         self._supplier_party_scheme(root))
+
+    def test_both_regions_agree_on_vkn(self):
+        inv = make_invoice(supplier_vkn=self.VKN, supplier_tckn=None)
+        root = ET.fromstring(UBLTriGenerator().generate(inv))
+        self.assertEqual(self._signatory_scheme(root),
+                         self._supplier_party_scheme(root))
+
+    def test_signature_id_keeps_combined_scheme(self):
+        """En üstteki cbc:ID 'VKN_TCKN' kalmalı — o ikisini de kapsıyor."""
+        cbc, cac = f"{{{NS_CBC}}}", f"{{{NS_CAC}}}"
+        inv = make_invoice(supplier_vkn=None, supplier_tckn=self.TCKN)
+        root = ET.fromstring(UBLTriGenerator().generate(inv))
+        top = root.find(f"{cac}Signature/{cbc}ID")
+        self.assertEqual(top.get("schemeID"), "VKN_TCKN")
+        self.assertEqual(top.text, self.TCKN)
+
+    def test_scheme_rule_helper_directly(self):
+        gen = UBLTriGenerator()
+        self.assertEqual(gen._supplier_scheme(self.VKN), "VKN")
+        self.assertEqual(gen._supplier_scheme(self.TCKN), "TCKN")
 
 
 class KnownDefectTaxRateTruncationTest(unittest.TestCase):

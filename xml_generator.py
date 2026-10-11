@@ -115,6 +115,16 @@ class UBLTriGenerator:
         self._add_sub(ref, "cbc:DocumentTypeCode", "GONDERIM_SEKLI")
         self._add_sub(ref, "cbc:DocumentType", "ELEKTRONIK")
 
+    @staticmethod
+    def _supplier_scheme(value: str) -> str:
+        """Satır kimliğinin şemasını uzunluğuna göre belirler.
+
+        VKN 10 haneli, TCKN 11 haneli. Kural tek yerde durmalı: `_add_signature`
+        ve `_add_supplier_party` aynı kimliği kullanıyor ve birinde şema
+        sabitlenip diğerinde hesaplanınca belgeler birbiriyle çelişiyordu.
+        """
+        return "VKN" if len(value) == 10 else "TCKN"
+
     def _add_signature(self, root: ET.Element, inv: InvoiceData):
         """İmza bloğunu ekler."""
         sig = self._add_cac_sub(root, "Signature")
@@ -123,7 +133,9 @@ class UBLTriGenerator:
 
         party = self._add_cac_sub(sig, "SignatoryParty")
         pid = self._add_cac_sub(party, "PartyIdentification")
-        self._add_sub(pid, "cbc:ID", sig_id, {"schemeID": "VKN"})
+        self._add_sub(
+            pid, "cbc:ID", sig_id, {"schemeID": self._supplier_scheme(sig_id)}
+        )
 
         addr = self._add_cac_sub(party, "PostalAddress")
         self._add_sub(addr, "cbc:StreetName", inv.supplier_street or "")
@@ -147,8 +159,9 @@ class UBLTriGenerator:
         # VKN veya TCKN
         pid = self._add_cac_sub(party, "PartyIdentification")
         vkn = inv.supplier_vkn or inv.supplier_tckn or "0000000000"
-        scheme = "VKN" if len(vkn) == 10 else "TCKN"
-        self._add_sub(pid, "cbc:ID", vkn, {"schemeID": scheme})
+        self._add_sub(
+            pid, "cbc:ID", vkn, {"schemeID": self._supplier_scheme(vkn)}
+        )
 
         pname = self._add_cac_sub(party, "PartyName")
         self._add_sub(pname, "cbc:Name", inv.supplier_name or "Bilinmiyor")
