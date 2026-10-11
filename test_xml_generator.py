@@ -348,28 +348,58 @@ class TaxTotalGroupingTest(unittest.TestCase):
         self.assertEqual(total.find(cbc + "TaxAmount").text, "0.00")
 
 
-class KnownDefectFabricatedDateTest(unittest.TestCase):
-    """# KNOWN DEFECT — P0-2: tarih yoksa uydurma tarih yazılıyor.
+class IssueDateTest(unittest.TestCase):
+    """Fatura tarihi eksikken davranış.
 
-    _add_additional_refs, issue_date boşken `or "2026-01-01"` fallback'i
-    kullanıyor. Yasal bir belgeye uydurma tarih yazmak kabul edilemez.
-
-    Düzeltme: tarih yoksa alan atlanmalı ya da üretim hata vermeli —
-    sessizce 2026-01-01 yazılmamalı.
+    Düzeltme öncesi `_add_additional_refs`, tarih yoksa sabit `2026-01-01`
+    yazıyordu — yasal belgeye uydurma tarih. Artık alan atlanıyor; eksik
+    tarih için `parse_warnings` zaten uyarı üretiyor.
     """
 
-    def test_missing_issue_date_yields_fabricated_date(self):
-        cbc, cac = f"{{{NS_CBC}}}", f"{{{NS_CAC}}}"
+    def _dates_in_document(self, xml):
+        """Belgedeki tüm IssueDate değerleri."""
+        root = ET.fromstring(xml)
+        cbc = f"{{{NS_CBC}}}"
+        return [e.text for e in root.iter(cbc + "IssueDate")]
+
+    def test_missing_date_omits_additional_document_reference_date(self):
+        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
         root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
         ref = root.find(cac + "AdditionalDocumentReference")
-        self.assertEqual(ref.find(cbc + "IssueDate").text, "2026-01-01")
+        self.assertIsNone(ref.find(cbc + "IssueDate"))
 
-    def test_header_issue_date_is_omitted_not_fabricated(self):
-        """Başlık alanı koşullu — yani tutarsızlık burada görünür:
-        belgenin bir yerinde tarih yok, diğerinde uydurma var."""
+    def test_missing_date_omits_header_date(self):
         cbc = f"{{{NS_CBC}}}"
         root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
         self.assertIsNone(root.find(cbc + "IssueDate"))
+
+    def test_no_fabricated_date_anywhere(self):
+        """Belgenin hiçbir yerinde 2026-01-01 olmamalı."""
+        xml = UBLTriGenerator().generate(make_invoice(issue_date=None))
+        self.assertNotIn("2026-01-01", xml)
+        self.assertEqual(self._dates_in_document(xml), [])
+
+    def test_present_date_is_written_in_both_places(self):
+        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
+        root = ET.fromstring(UBLTriGenerator().generate(make_invoice()))
+        self.assertEqual(root.find(cbc + "IssueDate").text, "2026-10-11")
+        ref = root.find(cac + "AdditionalDocumentReference")
+        self.assertEqual(ref.find(cbc + "IssueDate").text, "2026-10-11")
+
+    def test_surrounding_fields_survive_missing_date(self):
+        """Tarih atlanınca referans bloğu dağıtmamalı."""
+        cac, cbc = f"{{{NS_CAC}}}", f"{{{NS_CBC}}}"
+        root = ET.fromstring(UBLTriGenerator().generate(make_invoice(issue_date=None)))
+        ref = root.find(cac + "AdditionalDocumentReference")
+        self.assertEqual(ref.find(cbc + "ID").text, "2")
+        self.assertEqual(ref.find(cbc + "DocumentTypeCode").text, "GONDERIM_SEKLI")
+        self.assertEqual(ref.find(cbc + "DocumentType").text, "ELEKTRONIK")
+
+    def test_document_still_parses_without_date(self):
+        """Eksik tarih XML'i geçersiz kılmamalı."""
+        xml = UBLTriGenerator().generate(make_invoice(issue_date=None))
+        root = ET.fromstring(xml)
+        self.assertEqual(root.tag, f"{{{NS_ROOT}}}Invoice")
 
 
 class KnownDefectSignatorySchemeTest(unittest.TestCase):

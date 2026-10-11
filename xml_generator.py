@@ -100,10 +100,18 @@ class UBLTriGenerator:
         self._add_sub(root, "cbc:LineCountNumeric", str(len(inv.line_items)))
 
     def _add_additional_refs(self, root: ET.Element, inv: InvoiceData):
-        """Ek referans bilgilerini ekler."""
+        """Ek referans bilgilerini ekler.
+
+        Tarih yoksa alan **atlanır**. Daha önce buraya sabit bir `2026-01-01`
+        yazılıyordu; bu, uydurma tarihi yasal belgeye koyuyordu. Tarihi
+        bulamayan durum için `InvoiceData.parse_warnings` zaten uyarı
+        üretiyor (bkz. invoice_parser.py: "Fatura tarihi tespit edilemedi"),
+        yani bilinçli olarak boş bırakmak doğru davranış.
+        """
         ref = self._add_cac_sub(root, "AdditionalDocumentReference")
         self._add_sub(ref, "cbc:ID", "2")
-        self._add_sub(ref, "cbc:IssueDate", inv.issue_date or "2026-01-01")
+        if inv.issue_date:
+            self._add_sub(ref, "cbc:IssueDate", inv.issue_date)
         self._add_sub(ref, "cbc:DocumentTypeCode", "GONDERIM_SEKLI")
         self._add_sub(ref, "cbc:DocumentType", "ELEKTRONIK")
 
